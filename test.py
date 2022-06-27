@@ -44,11 +44,11 @@ if __name__ == "__main__":
     print("Model Saved...")
 
     # load model
-    model = torch.load('fasterrcnn.pt')
+    model_loaded = torch.load('fasterrcnn.pt')
     print("Model Reloaded...")
 
     # validation
     for sample in dataloader:
         images = sample["images"]
         targets = sample["targets"]
-        print(model(images))
+        print(model_loaded(images))
