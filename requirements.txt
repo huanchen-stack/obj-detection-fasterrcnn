@@ -1,0 +1,9 @@
+torch
+torchsummary
+numpy
+matplotlib
+torchvision
+Pillow
+scikit-image
+sigfig
+click
