@@ -14,3 +14,10 @@ venv3/
 
 # torch
 *.pt
+
+# onnx
+*.onnx
+onnx_trial/
+
+# jit
+jit_trial/

@@ -1,5 +1,4 @@
 import torch
-from torch import nn
 from torch.profiler import profile, record_function, ProfilerActivity
 import torchvision
 
@@ -16,6 +15,8 @@ from torchvision.models.detection.rpn import RPNHead, concat_box_prediction_laye
 from torchvision.models.detection.faster_rcnn import TwoMLPHead, FastRCNNPredictor
 
 from collections import OrderedDict
+from typing import Tuple, List, Dict, Optional, Union
+from torch import nn, Tensor
 import numpy as np
 import csv
 from sigfig import round
@@ -47,20 +48,23 @@ class FasterRCNN(torch.nn.Module):
 
         # for profiling data
         self.timer = Clock()
-        self.memorizer = MemRec()
 
         # for storing intermediate tensors and final outputs
-        self.args = {}
         self.logger = {
             "layer_vertices": [],
             "dependencies": [],
         }
+
+        # for jit (conv, ReLU should be initalized at __init__)
+        self.conv = list(self.model.rpn.head.conv.modules())[2]
+        self.ReLU = list(self.model.rpn.head.conv.modules())[3]
 
     def transform(self, images):
         # load module
         transform = self.model.transform
 
         # forward
+        images = [images[0]]
         images, _ = transform(images)
 
         return images
@@ -79,47 +83,48 @@ class FasterRCNN(torch.nn.Module):
         
         return x
 
-    def fpn(self, x):
+    def get_result_from_inner_blocks(self, x: Tensor, idx: int) -> Tensor:
+        fpn = self.model.backbone.fpn
+        num_blocks = len(fpn.inner_blocks)
+        if idx < 0:
+            idx += num_blocks
+        out = x
+        for i, module in enumerate(fpn.inner_blocks):
+            if i == idx:
+                out = module(x)
+        return out
+
+    def get_result_from_layer_blocks(self, x: Tensor, idx: int) -> Tensor:
+        fpn = self.model.backbone.fpn
+        num_blocks = len(fpn.layer_blocks)
+        if idx < 0:
+            idx += num_blocks
+        out = x
+        for i, module in enumerate(fpn.layer_blocks):
+            if i == idx:
+                out = module(x)
+        return out
+
+    def fpn(self, x: List[Tensor]) -> List[Tensor]:
         # load module
         fpn = self.model.backbone.fpn
-
-        # load needed functions
-        def get_result_from_inner_blocks(x, idx):
-            num_blocks = len(fpn.inner_blocks)
-            if idx < 0:
-                idx += num_blocks
-            out = x
-            for i, module in enumerate(fpn.inner_blocks):
-                if i == idx:
-                    out = module(x)
-            return out
-
-        def get_result_from_layer_blocks(x, idx):
-            num_blocks = len(fpn.layer_blocks)
-            if idx < 0:
-                idx += num_blocks
-            out = x
-            for i, module in enumerate(fpn.layer_blocks):
-                if i == idx:
-                    out = module(x)
-            return out
 
         # forward
         features_ = []
 
-        last_inner = get_result_from_inner_blocks(x[-1], -1)
-        features_.append(get_result_from_layer_blocks(last_inner, -1))
+        last_inner = self.get_result_from_inner_blocks(x[-1], -1)
+        features_.append(self.get_result_from_layer_blocks(last_inner, -1))
 
         for idx in range(len(x) - 2, -1, -1):
             # inner_{idx}
-            inner_lateral = get_result_from_inner_blocks(x[idx], idx)
+            inner_lateral = self.get_result_from_inner_blocks(x[idx], idx)
             feat_shape = inner_lateral.shape[-2:]
             # interpolate
             inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
             # addition
             last_inner = inner_lateral + inner_top_down
             # layer_{idx}
-            features_.insert(0, get_result_from_layer_blocks(last_inner, idx))
+            features_.insert(0, self.get_result_from_layer_blocks(last_inner, idx))
 
         # extra layer
         if fpn.extra_blocks is not None:
@@ -127,13 +132,19 @@ class FasterRCNN(torch.nn.Module):
 
         return features_
 
-    def rpn_parallel(self, rpn_head, conv, feature, i):
+    def rpn_parallel(self, rpn_head: torchvision.models.detection.rpn.RPNHead, feature: Tensor, i: int):
         # getting batch (unnecessary)
-        image_range = torch.arange(1, device="cuda:0" if torch.cuda.is_available() else "cpu")
-        batch_idx = image_range[:, None]
+        # FIXME: delete this segment
+        # image_range = torch.arange(1, device="cuda:0" if torch.cuda.is_available() else "cpu")
+        # batch_idx = image_range[:, None]
+        batch_idx = torch.tensor([[0]])
 
         # rpn_head
-        t = conv(feature)
+        # FIXME: clean the following segment
+        # t = rpn_head.conv(feature)
+        t = self.conv(feature)
+        t = self.ReLU(t)
+
         logits = [rpn_head.cls_logits(t)]
         bbox_reg = [rpn_head.bbox_pred(t)]
 
@@ -191,13 +202,15 @@ class FasterRCNN(torch.nn.Module):
         rpn_head = self.model.rpn.head
 
         # foward
+
+        # FIXME: delete the following segment
         # load and declare params
         # for rpn_head
-        convs = []
-        convs.append(rpn_head.conv)
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        convs.append(torch.nn.ReLU().to(device))
-        conv = torch.nn.Sequential(*convs)
+        # convs = []
+        # convs.append(rpn_head.conv)
+        # device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        # convs.append(torch.nn.ReLU().to(device))
+        # conv = torch.nn.Sequential(*convs)
 
         # for anchor generator
         # get args required for selecting top 1000 for dall 5 feeatures
@@ -205,14 +218,16 @@ class FasterRCNN(torch.nn.Module):
         proposals = []
         levels = []
         # getting batch (unnecessary)
-        image_range = torch.arange(1, device="cuda:0" if torch.cuda.is_available() else "cpu")
-        batch_idx = image_range[:, None]
+        # FIXME: delete the following segment
+        # image_range = torch.arange(1, device="cuda:0" if torch.cuda.is_available() else "cpu")
+        # batch_idx = image_range[:, None]
+        batch_idx = torch.tensor([[0]])
 
         # rpn_parallel
         i = 0
         for feature in features_:
             # call helper for each parallel structure
-            box_cls_, level_, proposal_ = self.rpn_parallel(rpn_head, conv, feature, i)
+            box_cls_, level_, proposal_ = self.rpn_parallel(rpn_head, feature, i)
 
             # append into lists
             objectness_prob.append(box_cls_)
@@ -326,7 +341,7 @@ class FasterRCNN(torch.nn.Module):
         box_features = self.roi_box_pool(features_, proposals)
         box_features_ = self.roi_box_head(box_features)
         class_logits, box_regression = self.roi_box_predictor(box_features_)
-        detections, detector_losses = self.postprocess_detection(class_logits, box_features, proposals)
+        detections, detector_losses = self.postprocess_detection(class_logits, box_regression, proposals)
         return detections, detector_losses
 
     def resize(self, detections):
@@ -359,7 +374,6 @@ class FasterRCNN(torch.nn.Module):
         return result
 
     def simulation(self, images):
-        # type: (List[Tensor]) -> List[Dict[str, Tensor]]]
         """Use the self-partitioned implementation to infer."""
 
         images = self.transform(images)
@@ -367,29 +381,25 @@ class FasterRCNN(torch.nn.Module):
         features_ = self.fpn(x)
         features = OrderedDict([(k, v) for k, v in zip(['0', '1', '2', '3', 'pool'], features_)])
         proposals, proposal_losses = self.rpn(features_)
-        # detections, detector_losses = self.roi(features_, proposals)
+        detections, detector_losses = self.roi(features_, proposals)
+        detections = self.resize(detections)
 
         # images, _ = self.model.transform(images)
         # features = self.model.backbone(images.tensors)
         # features_ = list(features.values())
         # proposals, proposal_losses = self.model.rpn(images, features, None)
-        detections, detector_losses = self.model.roi_heads(features, proposals, [(800, 800)], None)
-
-        
-        detections = self.resize(detections)
+        # detections, detector_losses = self.model.roi_heads(features, proposals, [(800, 800)], None)
 
         return detections
 
     def original(self, images):
-        # type: (List[Tensor]) -> List[Dict[str, Tensor]]]
         """Use the original implementation to infer."""
-        
+
         images = [images[0]]
-        self.out = self.model(images)
-        return self.out
+        detections = self.model(images)
+        return detections
 
     def forward(self, images):
-        # type: (List[Tensor]) -> List[Dict[str, Tensor]]]
         """
         Depend on the mode:
             if self.partitioned == True:

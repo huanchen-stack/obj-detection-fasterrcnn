@@ -40,15 +40,36 @@ if __name__ == "__main__":
     print("Model Loaded...")
 
     # save model
-    torch.save(model, 'fasterrcnn.pt')
+    # m = torch.jit.script(model)
+    # torch.jit.save(m, 'fasterrcnn.pt')
+    torch.save(model, "fasterrcnn.pt")
     print("Model Saved...")
 
     # load model
-    model_loaded = torch.load('fasterrcnn.pt')
+    # model_loaded = torch.jit.load('fasterrcnn.pt')
+    model_loaded = torch.load("fasterrcnn.pt")
     print("Model Reloaded...")
 
     # validation
+    images = None
     for sample in dataloader:
         images = sample["images"]
         targets = sample["targets"]
         print(model_loaded(images))
+    print("Validation Done...")
+
+    print(images.shape)
+    print(type(images))
+
+    # onnx conversion
+    torch.onnx.export(model_loaded, 
+                  images,
+                  "fasterrcnn.onnx",
+                  verbose=False,
+                  input_names=["actual_input"],
+                  output_names=["output"],
+                  export_params=True,
+                  )
+    print("Onnx Exported...")
+
+    
