@@ -19,11 +19,11 @@ from typing import Tuple, List, Dict, Optional, Union
 from torch import nn, Tensor
 import numpy as np
 import csv
-# from sigfig import round
+from sigfig import round
 
-from util.timer import Clock
-from util.memorizer import MemRec
-from util.utils import _default_anchorgen, permute_and_flatten, _tensor_size, _size_helper
+from timer import Clock
+from memorizer import MemRec
+from utils import _default_anchorgen, permute_and_flatten, _tensor_size, _size_helper
 
 
 class FasterRCNN(torch.nn.Module):
@@ -43,18 +43,15 @@ class FasterRCNN(torch.nn.Module):
         """
         super(FasterRCNN, self).__init__()
         # load model (pretrained fasterrcnn)
-        self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights='FasterRCNN_ResNet50_FPN_Weights.COCO_V1').eval()
+        self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True).eval()
         self.partitioned = partitioned
 
         # for profiling data
         self.timer = Clock()
-        self.memorizer = MemRec()
-        self.mem = True  # get memory consumption
-        self.warmup = 2  # num of warmup iterations
 
         # for storing intermediate tensors and final outputs
         self.logger = {
-            "profiles": [],
+            "layer_vertices": [],
             "dependencies": [],
         }
 
@@ -62,113 +59,27 @@ class FasterRCNN(torch.nn.Module):
         self.conv = list(self.model.rpn.head.conv.modules())[2]
         self.ReLU = list(self.model.rpn.head.conv.modules())[3]
 
-    def _profiler_wrapper(self, func, name, ignore_payload=False):
-        """
-        This function is a profiling helper that does the following:
-            1. warm up gpu n (warmup) times
-            2. get runtime (WALL)
-        Args:
-            1. (layer) func (Function): 
-                a. MUST NOT modify any intermediate variables
-                b. MUST return the output of corresponding layer
-                c. output must be a Tensor or a List of Tensors
-            2. name (String): MUST be consistant with the dependencies
-        """
-        # warm up (default twice)
-        for i in range(self.warmup):
-            output = func()
-
-        # get layer runtime (WALL)
-        self.timer.tic()
-        func()
-        self.timer.toc()
-
-        if self.mem: # get layer memory consumption
-            with profile(
-                    activities=
-                    [
-                        ProfilerActivity.CPU
-                    ] if not torch.cuda.is_available() else
-                    [
-                        ProfilerActivity.CPU,
-                        ProfilerActivity.CUDA
-                    ],
-                    profile_memory=True, record_shapes=True
-                ) as prof:
-                with record_function("model_inference"):
-                    func()
-            prof_report = str(prof.key_averages().table()).split("\n")
-            mem_out = self.memorizer.get_mem(prof_report, torch.cuda.is_available())
-
-        # output format:
-        #   layername,time,mem_cpu,mem_cuda,size,macs
-        #   undefined: -1
-        data_payload = "IGNORED" if ignore_payload else _size_helper(output)[1]
-        if not self.mem:
-            self.logger["profiles"].append(f"{name},{self.timer.get_time()},-1,-1,{data_payload},-1")
-        elif self.mem and torch.cuda.is_available():
-            self.logger["profiles"].append(f"{name},{self.timer.get_time()},{mem_out[0]},{mem_out[1]},{data_payload},-1")
-        elif self.mem and not torch.cuda.is_available():
-            self.logger["profiles"].append(f"{name},{self.timer.get_time()},{mem_out},-1,{data_payload},-1")
-        else:
-            assert False, f"Profiler: unknown profiling configurations."
-        
-    def _dependency_writer(self, source, target):
-        self.logger["dependencies"].append(f"{source},{target}")
-
-    def _logger_print(self):
-        print("================================================")
-        print("=================== PROFILES ===================")
-        print("================================================")
-        for line in self.logger["profiles"]:
-            print(line)
-        print()
-        print("================================================")
-        print("================== DEPENDENCIES ================")
-        print("================================================")
-        for line in self.logger["dependencies"]:
-            print(line)
-
     def transform(self, images):
         # load module
         transform = self.model.transform
 
         # forward
-        #   setup variables
         images = [images[0]]
-        #   setup func
-        def _transform():
-            return transform(images, None)[0]
-        #   get layer outputs
-        images_ = _transform()
-        #   logger outputs
-        self._profiler_wrapper(_transform, "transform")
-        self._dependency_writer("input", "transform")
+        images, _ = transform(images)
 
-        return images_
+        return images
 
     def backbone(self, img_tensors):
         # load module
         backbone = self.model.backbone.body
         
         # forward
-        #   setup variables
         x = []
         tmp_x = img_tensors
-        last_name = "transform"
         for name, layer in backbone.named_children():
-            # setup func
-            def _layer():
-                return layer(tmp_x)
-            tmp_x_ = _layer()
-            # logger outputs
-            self._profiler_wrapper(_layer, name)
-            self._dependency_writer(last_name, name)
-            last_name = name
-            # get layer outputs
-            tmp_x = tmp_x_
+            tmp_x = layer(tmp_x)
             if name[0:5] == "layer":
-                x.append(tmp_x.clone().detach())
+                x.append(tmp_x.clone())
         
         return x
 
@@ -180,15 +91,7 @@ class FasterRCNN(torch.nn.Module):
         out = x
         for i, module in enumerate(fpn.inner_blocks):
             if i == idx:
-                # forward
-                #   setup func
-                def _inner():
-                    return module(x)
-                #   get layer outputs
-                out = _inner()
-                #   logger outputs
-                self._profiler_wrapper(_inner, f"inner_{idx}")
-
+                out = module(x)
         return out
 
     def get_result_from_layer_blocks(self, x: Tensor, idx: int) -> Tensor:
@@ -199,15 +102,7 @@ class FasterRCNN(torch.nn.Module):
         out = x
         for i, module in enumerate(fpn.layer_blocks):
             if i == idx:
-                # forward
-                #   setup func
-                def _layer():
-                    return module(x)
-                #   get layer outputs
-                out = _layer()
-                #   logger outputs
-                self._profiler_wrapper(_layer, f"layer_{idx}")
-        
+                out = module(x)
         return out
 
     def fpn(self, x: List[Tensor]) -> List[Tensor]:
@@ -219,49 +114,21 @@ class FasterRCNN(torch.nn.Module):
 
         last_inner = self.get_result_from_inner_blocks(x[-1], -1)
         features_.append(self.get_result_from_layer_blocks(last_inner, -1))
-        self._dependency_writer("layer4", "inner_3")
-        self._dependency_writer("inner_3", "layer_3")
 
         for idx in range(len(x) - 2, -1, -1):
             # inner_{idx}
             inner_lateral = self.get_result_from_inner_blocks(x[idx], idx)
             feat_shape = inner_lateral.shape[-2:]
-            self._dependency_writer(f"layer{idx+1}", f"inner_{idx}")
-
             # interpolate
-            #   setup func
-            def _interpolate():
-                return F.interpolate(last_inner, size=feat_shape, mode="nearest")
-            #   get layer output
-            inner_top_down = _interpolate()
-            #   logger output
-            self._profiler_wrapper(_interpolate, f"interpolate__{idx}")
-            if idx == 2:
-                self._dependency_writer("inner_3", "interpolate__2")
-            else:
-                self._dependency_writer(f"add__{idx+1}", f"interpolate__{idx}")
-
+            inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
             # addition
             last_inner = inner_lateral + inner_top_down
-            self._dependency_writer(f"inner_{idx}", f"add__{idx}")
-            self._dependency_writer(f"interpolate__{idx}", f"add__{idx}")
-
             # layer_{idx}
             features_.insert(0, self.get_result_from_layer_blocks(last_inner, idx))
-            self._dependency_writer(f"add__{idx}", f"layer_{idx}")
 
         # extra layer
         if fpn.extra_blocks is not None:
-            # (ALWAYS THIS CASE)
-            # forward
-            #   setup func
-            def _extra():
-                return F.max_pool2d(features_[-1], 1, 2, 0)
-            #   get layer outputs
             features_.append(F.max_pool2d(features_[-1], 1, 2, 0))
-            #   logger outputs
-            self._profiler_wrapper(_extra, "extra")
-            self._dependency_writer("layer_3", "extra")
 
         return features_
 
@@ -360,18 +227,7 @@ class FasterRCNN(torch.nn.Module):
         i = 0
         for feature in features_:
             # call helper for each parallel structure
-            # forward
-            #   setup func
-            def _rpn_parallel():
-                return self.rpn_parallel(rpn_head, feature, i)
-            #   get layer outputs
             box_cls_, level_, proposal_ = self.rpn_parallel(rpn_head, feature, i)
-            #   logger outputs
-            self._profiler_wrapper(_rpn_parallel, f"rpn_parallel_f{i}")
-            if i != 4:
-                self._dependency_writer(f"layer_{i}", f"rpn_parallel_f{i}")
-            else:
-                self._dependency_writer("extra", "rpn_parallel_f4")
 
             # append into lists
             objectness_prob.append(box_cls_)
@@ -381,35 +237,26 @@ class FasterRCNN(torch.nn.Module):
             i += 1
 
         # rpn_merger
-        #   this segment should not take significant amount of time
         proposals = torch.cat(proposals, dim=1)
         objectness_prob = torch.cat(objectness_prob, dim=1)
         levels = torch.cat(levels, dim=1)
 
-        # forward
-        #   setup func
-        def _rpn_merger():
-            final_boxes = []
-            final_scores = []
-            for boxes, scores, lvl, img_shape in zip(proposals, objectness_prob, levels, [(800, 800)]):  # run only once since batch=1
-                boxes = box_ops.clip_boxes_to_image(boxes, img_shape)
-                keep = box_ops.remove_small_boxes(boxes, self.model.rpn.min_size)
-                boxes, scores, lvl = boxes[keep], scores[keep], lvl[keep]
-                keep = torch.where(scores >= self.model.rpn.score_thresh)[0]
-                boxes, scores, lvl = boxes[keep], scores[keep], lvl[keep]
-                keep = box_ops.batched_nms(boxes, scores, lvl, self.model.rpn.nms_thresh)
-                keep = keep[: self.model.rpn.post_nms_top_n()]
-                boxes, scores = boxes[keep], scores[keep]
+        final_boxes = []
+        final_scores = []
+        for boxes, scores, lvl, img_shape in zip(proposals, objectness_prob, levels, [(800, 800)]):  # run only once since batch=1
+            boxes = box_ops.clip_boxes_to_image(boxes, img_shape)
+            keep = box_ops.remove_small_boxes(boxes, self.model.rpn.min_size)
+            boxes, scores, lvl = boxes[keep], scores[keep], lvl[keep]
+            keep = torch.where(scores >= self.model.rpn.score_thresh)[0]
+            boxes, scores, lvl = boxes[keep], scores[keep], lvl[keep]
+            keep = box_ops.batched_nms(boxes, scores, lvl, self.model.rpn.nms_thresh)
+            keep = keep[: self.model.rpn.post_nms_top_n()]
+            boxes, scores = boxes[keep], scores[keep]
 
-                final_boxes.append(boxes)
-                final_scores.append(scores)
-            return final_boxes, final_scores
-        #   get layer outputs
-        proposals, proposal_losses = _rpn_merger()
-        #   logger outputs
-        self._profiler_wrapper(_rpn_merger, "rpn_merger")
-        for i in range(len(features_)):
-            self._dependency_writer(f"rpn_parallel_{i}", "rpn_merger")
+            final_boxes.append(boxes)
+            final_scores.append(scores)
+
+        proposals, proposal_losses = final_boxes, final_scores
 
         return proposals, proposal_losses
 
@@ -422,21 +269,7 @@ class FasterRCNN(torch.nn.Module):
         # load parameters
         # image_shapes = self.images.image_sizes
         features = OrderedDict([(k, v) for k, v in zip(['0', '1', '2', '3', 'pool'], features_)])
-
-        # forward
-        #   setup func
-        def _roi_box_pool():
-            return box_roi_pool(features, proposals, [(800, 800)])
-        #   get layer outputs
-        box_features = _roi_box_pool()
-        #   logger outputs
-        self._profiler_wrapper(_roi_box_pool, "roi_box_pool")
-        for i in range(len(features_)):
-            if i != 4:
-                self._dependency_writer(f"layer_{i}", "box_roi_pool")
-            else:
-                self._dependency_writer("extra", "box_roi_pool")
-        self._dependency_writer("rpn_merger", "box_roi_pool")
+        box_features = box_roi_pool(features, proposals, [(800, 800)])
 
         return box_features
 
@@ -445,25 +278,14 @@ class FasterRCNN(torch.nn.Module):
         box_head = self.model.roi_heads.box_head
         
         # load variables
-        x = box_features.clone().detach()
+        x = box_features.clone()
         # flatten should take VERY small amount of time and memory
         x = x.flatten(start_dim=1)
 
         # fc6
-        def _fc6():
-            return F.relu(box_head.fc6(x))
-        self._profiler_wrapper(_fc6, "fc6")
-        self._dependency_writer("roi_box_pool", "fc6")
-        x = _fc6()
-        # x = F.relu(box_head.fc6(x))
-
+        x = F.relu(box_head.fc6(x))
         # fc7
-        def _fc7():
-            return F.relu(box_head.fc7(x))
-        self._profiler_wrapper(_fc7, "fc7")
-        self._dependency_writer("fc6", "fc7")
-        x = _fc7()
-        # x = F.relu(box_head.fc7(x))
+        x = F.relu(box_head.fc7(x))
         
         # update parameters
         box_features_ = x
@@ -475,29 +297,19 @@ class FasterRCNN(torch.nn.Module):
         box_predictor = self.model.roi_heads.box_predictor
 
         # load parameters
-        x = box_features_.clone().detach()
+        x = box_features_.clone()
         # flatten should take VERY small amount of time and memory
         x = x.flatten(start_dim=1)
         
         # cls_score
-        def _cls_score():
-            return box_predictor.cls_score(x)
-        class_logits = _cls_score()
-        self._profiler_wrapper(_cls_score, "cls_score")
-        self._dependency_writer("fc7", "cls_score")
-        # class_logits = box_predictor.cls_score(x)
+        class_logits = box_predictor.cls_score(x)
 
         # bbox_pred_roi_
-        def _bbox_pred():
-            return box_predictor.bbox_pred(x)
-        box_regression = _bbox_pred()
-        self._profiler_wrapper(_bbox_pred, "bbox_pred")
-        self._dependency_writer("fc7", "bbox_pred")
-        # box_regression = box_predictor.bbox_pred(x)
+        box_regression = box_predictor.bbox_pred(x)
 
         return class_logits, box_regression
 
-    def postprocess_detections(self, class_logits, box_regression, proposals):
+    def postprocess_detection(self, class_logits, box_regression, proposals):
         # load module
         postprocess_detections = self.model.roi_heads.postprocess_detections
 
@@ -506,20 +318,10 @@ class FasterRCNN(torch.nn.Module):
         #                             class_logits, box_regression, 
         #                             proposals, self.images.image_sizes
         #                         )
-        def _postprocess_detections():
-            return postprocess_detections(
-                        class_logits, box_regression, 
-                        proposals, [(800, 800)]
-                    ) 
         boxes, scores, labels = postprocess_detections(
                                     class_logits, box_regression, 
                                     proposals, [(800, 800)]
                                 )
-        self._profiler_wrapper(_postprocess_detections, "postprocess_detections", ignore_payload=True)
-        self._dependency_writer("cls_score", "postprocess_detections")
-        self._dependency_writer("bbox_pred", "postprocess_detections")
-        self._dependency_writer("rpn_merger", "postprocess_detections")
-
         result = []
         losses = {}
         num_images = len(boxes)
@@ -539,7 +341,7 @@ class FasterRCNN(torch.nn.Module):
         box_features = self.roi_box_pool(features_, proposals)
         box_features_ = self.roi_box_head(box_features)
         class_logits, box_regression = self.roi_box_predictor(box_features_)
-        detections, detector_losses = self.postprocess_detections(class_logits, box_regression, proposals)
+        detections, detector_losses = self.postprocess_detection(class_logits, box_regression, proposals)
         return detections, detector_losses
 
     def resize(self, detections):
@@ -568,9 +370,6 @@ class FasterRCNN(torch.nn.Module):
             boxes = pred["boxes"]
             boxes = resize_boxes(boxes, im_s, o_im_s)
             result[i]["boxes"] = boxes
-        
-        self._dependency_writer("postprocess_detections", "resize")
-        self._dependency_writer("resize", "output")
 
         return result
 
@@ -580,10 +379,16 @@ class FasterRCNN(torch.nn.Module):
         images = self.transform(images)
         x = self.backbone(images.tensors)
         features_ = self.fpn(x)
-        # features = OrderedDict([(k, v) for k, v in zip(['0', '1', '2', '3', 'pool'], features_)])
-        proposals, _ = self.rpn(features_)
-        detections, _ = self.roi(features_, proposals)
+        features = OrderedDict([(k, v) for k, v in zip(['0', '1', '2', '3', 'pool'], features_)])
+        proposals, proposal_losses = self.rpn(features_)
+        detections, detector_losses = self.roi(features_, proposals)
         detections = self.resize(detections)
+
+        # images, _ = self.model.transform(images)
+        # features = self.model.backbone(images.tensors)
+        # features_ = list(features.values())
+        # proposals, proposal_losses = self.model.rpn(images, features, None)
+        # detections, detector_losses = self.model.roi_heads(features, proposals, [(800, 800)], None)
 
         return detections
 
@@ -603,16 +408,9 @@ class FasterRCNN(torch.nn.Module):
                 use the original implementation
         """
 
-        # # DEBUG MODE: Uncomment this segment
+        # TODO: Comment this segment
         print(self.simulation(images))
-        self._logger_print()
-        print(self.original(images))
-        print("\t\t\t", self.timer.get_agg())
-        self.timer.tic()
-        self.original(images)
-        self.timer.toc()
-        print(self.timer.get_time())
-        return
+        return self.original(images)
 
         if self.partitioned:
             return self.simulation(images), self.logger

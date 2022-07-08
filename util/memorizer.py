@@ -1,4 +1,4 @@
-from sigfig import round
+# from sigfig import round
 class MemRec(object):
 
     def __init__(self):
@@ -29,7 +29,7 @@ class MemRec(object):
                 print(unit)
                 exit(1)
             mem_all_layers += mem
-        return round(mem_all_layers, sigfigs=4)
+        return round(mem_all_layers, 4)
 
     def get_mem(self, prof_report, usingcuda=True):
 

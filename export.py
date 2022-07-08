@@ -1,4 +1,4 @@
-from fasterrcnn import FasterRCNN
+from fasterrcnn_ori import FasterRCNN
 from dataloader import ObjDetectionDataset
 
 import copy
