@@ -36,11 +36,12 @@ if __name__ == "__main__":
     print("Dataloader Created...")
 
     # model
-    model = FasterRCNN()
+    model = FasterRCNN().to(device)
     print("Model Loaded...")
 
     # validation
     for sample in dataloader:
         images = sample["images"]
-        targets = sample["targets"]
+        images = images.to(device)
+        # targets = sample["targets"]
         print(model(images))
