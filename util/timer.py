@@ -17,7 +17,7 @@ class Clock(object):
         self.agg += self.diff
     
     def get_time(self):
-        return round(self.diff, 4)
+        return round(self.diff, 6)
 
     def get_agg(self):
-        return round(self.agg, 4)
+        return round(self.agg, 6)
