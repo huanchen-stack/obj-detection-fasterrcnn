@@ -18,7 +18,8 @@ from torch.optim import lr_scheduler
 import matplotlib.pyplot as plt
 
 if __name__ == "__main__":
-    device = "cuda:0" if torch.cuda.is_available else "cpu"
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    print(device)
 
     # Hyperparameters
     # num_epochs = 10

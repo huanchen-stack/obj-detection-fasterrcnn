@@ -330,6 +330,96 @@ class FasterRCNN(torch.nn.Module):
             proposal_[batch_idx, top_n_idx_]
         )
     
+    def rpn_parallel_details(self, rpn_head, feature, i):
+        # getting batch (unnecessary)
+        batch_idx = torch.tensor([[0]])
+
+        # conv
+        def _conv():
+            return self.ReLU(self.conv(feature))
+        self._profiler_wrapper(_conv, f"rpn_parallel_f{i}:conv", ignore_payload=True)
+        t = _conv()
+
+        # cls and bbox
+        def _cls():
+            return [rpn_head.cls_logits(t)]
+        def _bbox():
+            return [rpn_head.bbox_pred(t)]
+        self._profiler_wrapper(_cls, f"rpn_parallel_f{i}:cls", ignore_payload=True)
+        self._profiler_wrapper(_bbox, f"rpn_parallel_f{i}:bbox", ignore_payload=True)
+        logits = _cls()
+        bbox_reg = _bbox()
+
+        # anchor generator prep
+        num_anchors_per_level_shape_tensor = [o[0].shape for o in logits]
+        num_anchors_per_level = [s[0] * s[1] * s[2] for s in num_anchors_per_level_shape_tensor]
+
+        # anchor generate
+        def _anchor():
+            grid_size = feature.shape[-2:]
+            # image_size = self.images.tensors.shape[-2:]
+            image_size = [800, 800]
+            dtype, device = feature.dtype, feature.device
+            stride = [
+                torch.empty((), dtype=torch.int64, device=device).fill_(image_size[0] // grid_size[0]),
+                torch.empty((), dtype=torch.int64, device=device).fill_(image_size[1] // grid_size[1]),
+            ]
+            anchor_generator = _default_anchorgen(i)
+            anchor_generator.set_cell_anchors(dtype, device)
+            anchors_ = anchor_generator.grid_anchors([grid_size], [stride])[0]
+            return anchors_
+        self._profiler_wrapper(_anchor, f"rpn_parallel_{i}:anchor")
+        anchors_ = _anchor()
+
+        # obj and pred bbox processing
+        box_cls_per_level = logits[0]
+        box_regression_per_level = bbox_reg[0]
+        N, AxC, H, W = box_cls_per_level.shape
+        Ax4 = box_regression_per_level.shape[1]
+        A = Ax4 // 4
+        C = AxC // A
+        def _cls_permflat():
+            return permute_and_flatten(box_cls_per_level, N, A, C, H, W)
+        def _bbox_permflat():
+            return permute_and_flatten(box_regression_per_level, N, A, 4, H, W)
+        self._profiler_wrapper(_cls_permflat, f"rpn_parallel_f{i}:cls_permflat", ignore_payload=True)
+        self._profiler_wrapper(_bbox_permflat, f"rpn_parallel_f{i}:bbox_permflat", ignore_payload=True)
+        box_cls_per_level = _cls_permflat()
+        box_regression_per_level = _bbox_permflat()
+
+        box_cls_ = box_cls_per_level.flatten(0, -2)
+        box_regression_ = box_regression_per_level.reshape(-1, 4)
+
+        # get proposals
+        def _decode():
+            return self.model.rpn.box_coder.decode(box_regression_.detach(), [anchors_])
+        self._profiler_wrapper(_decode, f"rpn_parallel_f{i}:decode", ignore_payload=True)
+        proposal_ = _decode()
+        proposal_ = proposal_.view(1, -1, 4)
+
+        # get top n idx for each level
+        num_images = 1
+        device = proposal_.device
+        box_cls_ = box_cls_.detach()
+        box_cls_ = box_cls_.reshape(1, -1)
+        level_ = [torch.full((num_anchors_per_level[0], ), i, dtype=torch.int64, device=device)]
+        level_ = torch.cat(level_, 0)
+        level_ = level_.reshape(1, -1).expand_as(box_cls_)
+        def _top_idx():
+            return self.model.rpn._get_top_n_idx(box_cls_, [num_anchors_per_level[0]])
+        self._profiler_wrapper(_top_idx, f"rpn_parallel_f{i}:top_idx", ignore_payload=True)
+        top_n_idx_ = _top_idx()
+
+        def _sigmoid():
+            return torch.sigmoid(box_cls_[batch_idx, top_n_idx_])
+        self._profiler_wrapper(_sigmoid, f"rpn_parallel_f{i}:sigmoid", ignore_payload=True)
+
+        return (
+            torch.sigmoid(box_cls_[batch_idx, top_n_idx_]), 
+            level_[batch_idx, top_n_idx_], 
+            proposal_[batch_idx, top_n_idx_]
+        )
+
     def rpn(self, features_):
         # load module
         rpn_head = self.model.rpn.head
@@ -377,6 +467,9 @@ class FasterRCNN(torch.nn.Module):
             objectness_prob.append(box_cls_)
             levels.append(level_)
             proposals.append(proposal_)
+
+            # get more details
+            self.rpn_parallel_details(rpn_head, feature, i)
 
             i += 1
 
