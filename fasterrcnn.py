@@ -50,7 +50,7 @@ class FasterRCNN(torch.nn.Module):
         self.timer = Clock()
         self.memorizer = MemRec()
         self.mem = True  # get memory consumption
-        self.warmup = 2  # num of warmup iterations
+        self.warmup = 0  # num of warmup iterations
 
         # for storing intermediate tensors and final outputs
         self.logger = {
@@ -139,10 +139,10 @@ class FasterRCNN(torch.nn.Module):
         #   setup func
         def _transform():
             return transform(images, None)[0]
+        self._profiler_wrapper(_transform, "transform")
         #   get layer outputs
         images_ = _transform()
         #   logger outputs
-        self._profiler_wrapper(_transform, "transform")
         self._dependency_writer("input", "transform")
 
         return images_
@@ -160,9 +160,9 @@ class FasterRCNN(torch.nn.Module):
             # setup func
             def _layer():
                 return layer(tmp_x)
+            self._profiler_wrapper(_layer, name)
             tmp_x_ = _layer()
             # logger outputs
-            self._profiler_wrapper(_layer, name)
             self._dependency_writer(last_name, name)
             last_name = name
             # get layer outputs
@@ -184,10 +184,10 @@ class FasterRCNN(torch.nn.Module):
                 #   setup func
                 def _inner():
                     return module(x)
+                self._profiler_wrapper(_inner, f"inner_{idx}")
                 #   get layer outputs
                 out = _inner()
                 #   logger outputs
-                self._profiler_wrapper(_inner, f"inner_{idx}")
 
         return out
 
@@ -203,10 +203,10 @@ class FasterRCNN(torch.nn.Module):
                 #   setup func
                 def _layer():
                     return module(x)
+                self._profiler_wrapper(_layer, f"layer_{idx}")
                 #   get layer outputs
                 out = _layer()
                 #   logger outputs
-                self._profiler_wrapper(_layer, f"layer_{idx}")
         
         return out
 
@@ -232,10 +232,10 @@ class FasterRCNN(torch.nn.Module):
             #   setup func
             def _interpolate():
                 return F.interpolate(last_inner, size=feat_shape, mode="nearest")
+            self._profiler_wrapper(_interpolate, f"interpolate__{idx}")
             #   get layer output
             inner_top_down = _interpolate()
             #   logger output
-            self._profiler_wrapper(_interpolate, f"interpolate__{idx}")
             if idx == 2:
                 self._dependency_writer("inner_3", "interpolate__2")
             else:
@@ -257,10 +257,10 @@ class FasterRCNN(torch.nn.Module):
             #   setup func
             def _extra():
                 return F.max_pool2d(features_[-1], 1, 2, 0)
+            self._profiler_wrapper(_extra, "extra")
             #   get layer outputs
             features_.append(F.max_pool2d(features_[-1], 1, 2, 0))
             #   logger outputs
-            self._profiler_wrapper(_extra, "extra")
             self._dependency_writer("layer_3", "extra")
 
         return features_
@@ -454,10 +454,10 @@ class FasterRCNN(torch.nn.Module):
             #   setup func
             def _rpn_parallel():
                 return self.rpn_parallel(rpn_head, feature, i)
+            self._profiler_wrapper(_rpn_parallel, f"rpn_parallel_f{i}")
             #   get layer outputs
             box_cls_, level_, proposal_ = self.rpn_parallel(rpn_head, feature, i)
             #   logger outputs
-            self._profiler_wrapper(_rpn_parallel, f"rpn_parallel_f{i}")
             if i != 4:
                 self._dependency_writer(f"layer_{i}", f"rpn_parallel_f{i}")
             else:
@@ -497,10 +497,10 @@ class FasterRCNN(torch.nn.Module):
                 final_boxes.append(boxes)
                 final_scores.append(scores)
             return final_boxes, final_scores
+        self._profiler_wrapper(_rpn_merger, "rpn_merger")
         #   get layer outputs
         proposals, proposal_losses = _rpn_merger()
         #   logger outputs
-        self._profiler_wrapper(_rpn_merger, "rpn_merger")
         for i in range(len(features_)):
             self._dependency_writer(f"rpn_parallel_{i}", "rpn_merger")
 
@@ -520,10 +520,10 @@ class FasterRCNN(torch.nn.Module):
         #   setup func
         def _roi_box_pool():
             return box_roi_pool(features, proposals, [(800, 800)])
+        self._profiler_wrapper(_roi_box_pool, "roi_box_pool")
         #   get layer outputs
         box_features = _roi_box_pool()
         #   logger outputs
-        self._profiler_wrapper(_roi_box_pool, "roi_box_pool")
         for i in range(len(features_)):
             if i != 4:
                 self._dependency_writer(f"layer_{i}", "box_roi_pool")
@@ -575,16 +575,16 @@ class FasterRCNN(torch.nn.Module):
         # cls_score
         def _cls_score():
             return box_predictor.cls_score(x)
-        class_logits = _cls_score()
         self._profiler_wrapper(_cls_score, "cls_score")
+        class_logits = _cls_score()
         self._dependency_writer("fc7", "cls_score")
         # class_logits = box_predictor.cls_score(x)
 
         # bbox_pred_roi_
         def _bbox_pred():
             return box_predictor.bbox_pred(x)
-        box_regression = _bbox_pred()
         self._profiler_wrapper(_bbox_pred, "bbox_pred")
+        box_regression = _bbox_pred()
         self._dependency_writer("fc7", "bbox_pred")
         # box_regression = box_predictor.bbox_pred(x)
 
@@ -604,11 +604,11 @@ class FasterRCNN(torch.nn.Module):
                         class_logits, box_regression, 
                         proposals, [(800, 800)]
                     ) 
+        self._profiler_wrapper(_postprocess_detections, "postprocess_detections", ignore_payload=True)
         boxes, scores, labels = postprocess_detections(
                                     class_logits, box_regression, 
                                     proposals, [(800, 800)]
                                 )
-        self._profiler_wrapper(_postprocess_detections, "postprocess_detections", ignore_payload=True)
         self._dependency_writer("cls_score", "postprocess_detections")
         self._dependency_writer("bbox_pred", "postprocess_detections")
         self._dependency_writer("rpn_merger", "postprocess_detections")

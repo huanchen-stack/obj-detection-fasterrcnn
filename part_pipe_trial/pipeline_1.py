@@ -27,14 +27,12 @@ from typing import Tuple, List, Dict, Optional, Union
 from torch import nn, Tensor
 import numpy as np
 import csv
-from sigfig import round
+import os
 
-from timer import Clock
-from memorizer import MemRec
 from utils import _default_anchorgen, permute_and_flatten, _tensor_size, _size_helper
 
 
-class FasterRCNN(torch.nn.Module):
+class Pipeline1(torch.nn.Module):
     def __init__(self, partitioned=False):
         """
         Only for pretrained FasterRCNN (ResNet50 as backbone).
@@ -49,19 +47,18 @@ class FasterRCNN(torch.nn.Module):
             args: store intermediate tensors
             logger: store writable outputs (convert to csv) (return in forward() )
         """
-        super(FasterRCNN, self).__init__()
+        super(Pipeline1, self).__init__()
         # load model (pretrained fasterrcnn)
-        self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True).eval()
-        self.partitioned = partitioned
+        self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights="FasterRCNN_ResNet50_FPN_Weights.COCO_V1").eval()
+        self.images = None
+        self.path = os.getcwd()
+        self.path = os.path.join(self.path, "part_pipe_trial/intermediate/")
 
-        # for profiling data
-        self.timer = Clock()
-
-        # for storing intermediate tensors and final outputs
-        self.logger = {
-            "layer_vertices": [],
-            "dependencies": [],
-        }
+        # for recording important timestamps when intermediate results are computed
+        self.start_elapsing = None
+        self.mode = None
+        self.timestamps = {}
+        self.intermediate = {}  # load from prev pipe
 
         # for jit (conv, ReLU should be initalized at __init__)
         self.conv = list(self.model.rpn.head.conv.modules())[2]
