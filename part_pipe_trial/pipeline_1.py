@@ -1,3 +1,11 @@
+"""
+part_pip_trial (Partition Pipeline Trial for the Faster R-CNN model)
+For this trial, we use the BOTEC partition result, which splits the model into two seperate parts/segments.
+    (denoted as pipeline_0 and pipeline_1)
+This file contains segment 0 of the model.
+
+"""
+
 import torch
 from torch.profiler import profile, record_function, ProfilerActivity
 import torchvision
@@ -20,11 +28,10 @@ from torch import nn, Tensor
 import numpy as np
 import csv
 from sigfig import round
-import time
 
-from util.timer import Clock
-from util.memorizer import MemRec
-from util.utils import _default_anchorgen, permute_and_flatten, _tensor_size, _size_helper
+from timer import Clock
+from memorizer import MemRec
+from utils import _default_anchorgen, permute_and_flatten, _tensor_size, _size_helper
 
 
 class FasterRCNN(torch.nn.Module):
@@ -44,7 +51,7 @@ class FasterRCNN(torch.nn.Module):
         """
         super(FasterRCNN, self).__init__()
         # load model (pretrained fasterrcnn)
-        self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights="FasterRCNN_ResNet50_FPN_Weights.COCO_V1").eval()
+        self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True).eval()
         self.partitioned = partitioned
 
         # for profiling data
@@ -410,12 +417,8 @@ class FasterRCNN(torch.nn.Module):
         """
 
         # TODO: Comment this segment
-        self.simulation(images)
-        self.simulation(images)
-        start = time.time()
-        self.simulation(images)
-        print(time.time() - start)
-        return 
+        print(self.simulation(images))
+        return self.original(images)
 
         if self.partitioned:
             return self.simulation(images), self.logger

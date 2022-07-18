@@ -1,5 +1,5 @@
-from fasterrcnn_ori import FasterRCNN
 from dataloader import ObjDetectionDataset
+from pipeline_0 import Pipeline0
 
 import copy
 import os
@@ -37,7 +37,7 @@ if __name__ == "__main__":
     print("Dataloader Created...")
 
     # model
-    model = FasterRCNN().to(device)
+    model = Pipeline0().to(device)
     print("Model Loaded...")
 
     # validation

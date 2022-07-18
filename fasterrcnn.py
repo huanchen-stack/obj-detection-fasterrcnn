@@ -468,8 +468,8 @@ class FasterRCNN(torch.nn.Module):
             levels.append(level_)
             proposals.append(proposal_)
 
-            # get more details
-            self.rpn_parallel_details(rpn_head, feature, i)
+            # # get more details
+            # self.rpn_parallel_details(rpn_head, feature, i)
 
             i += 1
 
