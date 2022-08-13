@@ -1,12 +1,13 @@
 from __future__ import print_function, division
 import os
 import torch
-from skimage import io, transform
+# from skimage import io, transform
 import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 import json
+from PIL import Image
 
 class ObjDetectionDataset(Dataset):
     def __init__(self, json_file=None, root_dir=None, transform=None, fname=None, iterations=None):
@@ -51,7 +52,9 @@ class ObjDetectionDataset(Dataset):
         """
 
         if self.fname is not None:
-            images = io.imread(self.fname)
+            images = Image.open(self.fname)
+            images = np.array(images)
+            # images = io.imread(self.fname)
             images = self.transform(images)
             # images = torch.unsqueeze(images, dim=0)
             sample = {"images": images, "targets": {}}

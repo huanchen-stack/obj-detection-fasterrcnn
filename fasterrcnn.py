@@ -43,14 +43,17 @@ class FasterRCNN(torch.nn.Module):
         """
         super(FasterRCNN, self).__init__()
         # load model (pretrained fasterrcnn)
-        self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights='FasterRCNN_ResNet50_FPN_Weights.COCO_V1').eval()
+        if torchvision.__version__ == '0.13.0':
+            self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights='FasterRCNN_ResNet50_FPN_Weights.COCO_V1').eval()
+        else:
+            self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True).eval()
         self.partitioned = partitioned
 
         # for profiling data
         self.timer = Clock()
         self.memorizer = MemRec()
-        self.mem = True  # get memory consumption
-        self.warmup = 0  # num of warmup iterations
+        self.mem = False  # get memory consumption
+        self.warmup = 3  # num of warmup iterations
 
         # for storing intermediate tensors and final outputs
         self.logger = {
@@ -59,8 +62,12 @@ class FasterRCNN(torch.nn.Module):
         }
 
         # for jit (conv, ReLU should be initalized at __init__)
-        self.conv = list(self.model.rpn.head.conv.modules())[2]
-        self.ReLU = list(self.model.rpn.head.conv.modules())[3]
+        if torchvision.__version__ == '0.13.0':
+            self.conv = list(self.model.rpn.head.conv.modules())[2]
+            self.ReLU = list(self.model.rpn.head.conv.modules())[3]
+        else:
+            self.conv = self.model.rpn.head.conv
+            self.ReLU = torch.nn.ReLU()
 
     def _profiler_wrapper(self, func, name, ignore_payload=False):
         """

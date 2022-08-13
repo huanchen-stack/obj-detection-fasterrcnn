@@ -1,4 +1,4 @@
-from fasterrcnn_ori import FasterRCNN
+from fasterrcnn import FasterRCNN
 from dataloader import ObjDetectionDataset
 
 import copy
@@ -6,7 +6,6 @@ import os
 import time
 from argparse import ArgumentParser
 from scipy.stats import pearsonr
-import click
 
 import torch
 import torch.nn as nn
