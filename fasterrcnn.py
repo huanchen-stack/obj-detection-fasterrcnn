@@ -1,3 +1,4 @@
+from gc import enable
 import torch
 from torch.profiler import profile, record_function, ProfilerActivity
 import torchvision
@@ -19,6 +20,7 @@ from typing import Tuple, List, Dict, Optional, Union
 from torch import nn, Tensor
 import numpy as np
 import csv
+import time
 # from sigfig import round
 
 from util.timer import Clock
@@ -712,6 +714,12 @@ class FasterRCNN(torch.nn.Module):
         self.original(images)
         self.timer.toc()
         print(self.timer.get_time())
+        
+        start = time.time()
+        self.original(images)
+        end = time.time()
+        print(f"delta: {end - start}")
+        print(F"{start},{end}")
         return
 
         if self.partitioned:
