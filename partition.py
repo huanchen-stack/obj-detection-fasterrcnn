@@ -51,7 +51,22 @@ class FasterRCNN(torch.nn.Module):
         #########################################################
         ############## Needed for PartitionManager ##############
         #########################################################
-        self.exec_labels = set()
+        self.exec_labels = {
+            "img_transform", 
+            "backbone_conv1", "backbone_bn1", "backbone_relu", "backbone_maxpool", 
+            "backbone_layer1", "backbone_layer2", "backbone_layer3", "backbone_layer4", 
+            "fpn_inner_3", "fpn_layer_3", 
+            "fpn_inner_2", "fpn_interpolate_2", "fpn_add_2", "fpn_layer_2", 
+            "fpn_inner_1", "fpn_interpolate_1", "fpn_add_1", "fpn_layer_1", 
+            "fpn_inner_0", "fpn_interpolate_0", "fpn_add_0", "fpn_layer_0", 
+            "fpn_extra", 
+            "rpn_parallel_0", "rpn_parallel_1", "rpn_parallel_2", "rpn_parallel_3", "rpn_parallel_4", 
+            "rpn_merger", 
+            "roi_box_pooling", 
+            "roi_head_fc6", "roi_head_fc7", 
+            "roi_cls_score", "roi_bbox_pred", 
+            "roi_postprocess_detections",
+        }
         self.args = {}
         self.filtering = False
         #########################################################
@@ -168,12 +183,10 @@ class FasterRCNN(torch.nn.Module):
 
         self.args["features_"] = features_  # for convenience
         
-    def rpn_parallel(self, rpn_head: torchvision.models.detection.rpn.RPNHead, feature: Tensor, i: int):
-        # getting batch (unnecessary)
-        # FIXME: delete this segment
-        # image_range = torch.arange(1, device="cuda:0" if torch.cuda.is_available() else "cpu")
-        # batch_idx = image_range[:, None]
+    def rpn_parallel(self, feature: Tensor, i: int):
         batch_idx = torch.tensor([[0]])
+
+        rpn_head = self.model.rpn.head
 
         # rpn_head
         # FIXME: clean the following segment
@@ -323,7 +336,7 @@ class FasterRCNN(torch.nn.Module):
             proposal_[batch_idx, top_n_idx_]
         )
 
-    def rpn(self, features_):
+    def rpn(self):
         # for anchor generator
         # get args required for selecting top 1000 for dall 5 feeatures
         objectness_prob = []
@@ -332,22 +345,15 @@ class FasterRCNN(torch.nn.Module):
 
         # rpn_parallel
         i = 0
-        for feature in features_:
-            # call helper for each parallel structure
-            # forward
-            #   setup func
-            def _rpn_parallel():
-                return self.rpn_parallel(self.model.rpn.head, feature, i)
-            self._profiler_wrapper(_rpn_parallel, f"rpn_parallel_f{i}")
-            #   get layer outputs
-            box_cls_, level_, proposal_ = self.rpn_parallel(self.model.rpn.head, feature, i)
-            #   logger outputs
-            if i != 4:
-                self._dependency_writer(f"layer_{i}", f"rpn_parallel_f{i}")
-            else:
-                self._dependency_writer("extra", "rpn_parallel_f4")
+        for feature in self.args["features_"]:
+            
+            @partition_manager(self, self.filtering, suffix=f"_{i}")
+            def rpn_parallel(x):
+                return self.rpn_parallel(x, i)  # i is for generating anchor size
+            rpn_parallel(feature)
 
-            # append into lists
+            box_cls_, level_, proposal_ = self.args[f"rpn_parallel_{i}"]
+
             objectness_prob.append(box_cls_)
             levels.append(level_)
             proposals.append(proposal_)
@@ -358,14 +364,16 @@ class FasterRCNN(torch.nn.Module):
             i += 1
 
         # rpn_merger
-        #   this segment should not take significant amount of time
         proposals = torch.cat(proposals, dim=1)
         objectness_prob = torch.cat(objectness_prob, dim=1)
         levels = torch.cat(levels, dim=1)
 
-        # forward
-        #   setup func
-        def _rpn_merger():
+        self.args["proposals"] = proposals
+        self.args["objectness_prob"] = objectness_prob
+        self.args["levels"] = levels
+
+        @partition_manager(self, self.filtering, suffix=f"")
+        def rpn_merger(proposals, objectness_prob, levels):
             final_boxes = []
             final_scores = []
             for boxes, scores, lvl, img_shape in zip(proposals, objectness_prob, levels, [(800, 800)]):  # run only once since batch=1
@@ -381,100 +389,44 @@ class FasterRCNN(torch.nn.Module):
                 final_boxes.append(boxes)
                 final_scores.append(scores)
             return final_boxes, final_scores
-        self._profiler_wrapper(_rpn_merger, "rpn_merger")
-        #   get layer outputs
-        proposals, proposal_losses = _rpn_merger()
-        #   logger outputs
-        for i in range(len(features_)):
-            self._dependency_writer(f"rpn_parallel_{i}", "rpn_merger")
+        rpn_merger("proposals", "objectness_prob", "levels")
 
-        return proposals, proposal_losses
+        self.args["proposals"] = self.args["rpn_merger"][0]
 
-    def roi_box_pool(self, features_, proposals):
-        # load modules
-        box_roi_pool = self.model.roi_heads.box_roi_pool
-        box_head = self.model.roi_heads.box_head
-        box_predictor = self.model.roi_heads.box_predictor
+    def roi_box_pool(self):
 
-        # load parameters
-        # image_shapes = self.images.image_sizes
-        features = OrderedDict([(k, v) for k, v in zip(['0', '1', '2', '3', 'pool'], features_)])
-
-        # forward
-        #   setup func
-        def _roi_box_pool():
-            return box_roi_pool(features, proposals, [(800, 800)])
-        self._profiler_wrapper(_roi_box_pool, "roi_box_pool")
-        #   get layer outputs
-        box_features = _roi_box_pool()
-        #   logger outputs
-        for i in range(len(features_)):
-            if i != 4:
-                self._dependency_writer(f"layer_{i}", "box_roi_pool")
-            else:
-                self._dependency_writer("extra", "box_roi_pool")
-        self._dependency_writer("rpn_merger", "box_roi_pool")
-
-        return box_features
-
-    def roi_box_head(self, box_features):
-        # load module
-        box_head = self.model.roi_heads.box_head
+        @partition_manager(self, self.filtering, suffix=f"")
+        def roi_box_pooling(features_, proposals):
+            features_ = [self.args[featureStr] for featureStr in features_]
+            features = OrderedDict([(k, v) for k, v in zip(['0', '1', '2', '3', 'pool'], features_)])
+            return self.model.roi_heads.box_roi_pool(features, proposals, [(800, 800)])
+        roi_box_pooling("features_", "proposals")
         
-        # load variables
-        x = box_features.clone().detach()
-        # flatten should take VERY small amount of time and memory
-        x = x.flatten(start_dim=1)
+    def roi_box_head(self):
 
-        # fc6
-        def _fc6():
-            return F.relu(box_head.fc6(x))
-        self._profiler_wrapper(_fc6, "fc6")
-        self._dependency_writer("roi_box_pool", "fc6")
-        x = _fc6()
-        # x = F.relu(box_head.fc6(x))
+        @partition_manager(self, self.filtering, suffix=f"")
+        def roi_head_fc6(x):
+            return F.relu(self.model.roi_heads.box_head.fc6(x.flatten(start_dim=1)))
+        roi_head_fc6("roi_box_pooling")
 
-        # fc7
-        def _fc7():
-            return F.relu(box_head.fc7(x))
-        self._profiler_wrapper(_fc7, "fc7")
-        self._dependency_writer("fc6", "fc7")
-        x = _fc7()
-        # x = F.relu(box_head.fc7(x))
+        @partition_manager(self, self.filtering, suffix=f"")
+        def roi_head_fc7(x):
+            return F.relu(self.model.roi_heads.box_head.fc7(x))
+        roi_head_fc7("roi_head_fc6")
         
-        # update parameters
-        box_features_ = x
-
-        return box_features_
-
-    def roi_box_predictor(self, box_features_):
-        # load module
-        box_predictor = self.model.roi_heads.box_predictor
-
-        # load parameters
-        x = box_features_.clone().detach()
-        # flatten should take VERY small amount of time and memory
-        x = x.flatten(start_dim=1)
+    def roi_box_predictor(self):
         
-        # cls_score
-        def _cls_score():
-            return box_predictor.cls_score(x)
-        self._profiler_wrapper(_cls_score, "cls_score")
-        class_logits = _cls_score()
-        self._dependency_writer("fc7", "cls_score")
-        # class_logits = box_predictor.cls_score(x)
+        @partition_manager(self, self.filtering, suffix=f"")
+        def roi_cls_score(x):
+            return self.model.roi_heads.box_predictor.cls_score(x.flatten(start_dim=1))
+        roi_cls_score("roi_head_fc7")
+        
+        @partition_manager(self, self.filtering, suffix=f"")
+        def roi_bbox_pred(x):
+            return self.model.roi_heads.box_predictor.bbox_pred(x.flatten(start_dim=1))
+        roi_bbox_pred("roi_head_fc7")
 
-        # bbox_pred_roi_
-        def _bbox_pred():
-            return box_predictor.bbox_pred(x)
-        self._profiler_wrapper(_bbox_pred, "bbox_pred")
-        box_regression = _bbox_pred()
-        self._dependency_writer("fc7", "bbox_pred")
-        # box_regression = box_predictor.bbox_pred(x)
-
-        return class_logits, box_regression
-
-    def postprocess_detections(self, class_logits, box_regression, proposals):
+    def postprocess_detections(self):
         # load module
         postprocess_detections = self.model.roi_heads.postprocess_detections
 
@@ -483,73 +435,19 @@ class FasterRCNN(torch.nn.Module):
         #                             class_logits, box_regression, 
         #                             proposals, self.images.image_sizes
         #                         )
-        def _postprocess_detections():
-            return postprocess_detections(
+        @partition_manager(self, self.filtering, suffix=f"")
+        def roi_postprocess_detections(class_logits, box_regression, proposals):
+            return self.model.roi_heads.postprocess_detections(
                         class_logits, box_regression, 
                         proposals, [(800, 800)]
                     ) 
-        self._profiler_wrapper(_postprocess_detections, "postprocess_detections", ignore_payload=True)
-        boxes, scores, labels = postprocess_detections(
-                                    class_logits, box_regression, 
-                                    proposals, [(800, 800)]
-                                )
-        self._dependency_writer("cls_score", "postprocess_detections")
-        self._dependency_writer("bbox_pred", "postprocess_detections")
-        self._dependency_writer("rpn_merger", "postprocess_detections")
+        roi_postprocess_detections("roi_cls_score", "roi_bbox_pred", "proposals")
 
-        result = []
-        losses = {}
-        num_images = len(boxes)
-        for i in range(num_images):
-            result.append(
-                {
-                    "boxes": boxes[i],
-                    "labels": labels[i],
-                    "scores": scores[i],
-                }
-            )
-        detections, detector_losses = result, losses
-
-        return detections, detector_losses
-
-    def roi(self, features_, proposals):
-        box_features = self.roi_box_pool(features_, proposals)
-        box_features_ = self.roi_box_head(box_features)
-        class_logits, box_regression = self.roi_box_predictor(box_features_)
-        detections, detector_losses = self.postprocess_detections(class_logits, box_regression, proposals)
-        return detections, detector_losses
-
-    def resize(self, detections):
-        # load function
-        def resize_boxes(boxes, original_size, new_size):
-            ratios = [
-                torch.tensor(s, dtype=torch.float32, device=boxes.device)
-                / torch.tensor(s_orig, dtype=torch.float32, device=boxes.device)
-                for s, s_orig in zip(new_size, original_size)
-            ]
-            ratio_height, ratio_width = ratios
-            xmin, ymin, xmax, ymax = boxes.unbind(1)
-
-            xmin = xmin * ratio_width
-            xmax = xmax * ratio_width
-            ymin = ymin * ratio_height
-            ymax = ymax * ratio_height
-            return torch.stack((xmin, ymin, xmax, ymax), dim=1)
-
-        # forward
-        result = detections
-        image_shapes = [(800, 800)]
-        # original_image_sizes = self.args["original_image_sizes"]
-        original_image_sizes = [(224, 224)]
-        for i, (pred, im_s, o_im_s) in enumerate(zip(result, image_shapes, original_image_sizes)):
-            boxes = pred["boxes"]
-            boxes = resize_boxes(boxes, im_s, o_im_s)
-            result[i]["boxes"] = boxes
-        
-        self._dependency_writer("postprocess_detections", "resize")
-        self._dependency_writer("resize", "output")
-
-        return result
+    def roi(self):
+        self.roi_box_pool()
+        self.roi_box_head()
+        self.roi_box_predictor()
+        self.postprocess_detections()
 
     def simulation(self, images):
         """Use the self-partitioned implementation to infer."""
@@ -558,12 +456,8 @@ class FasterRCNN(torch.nn.Module):
         self.transform()
         self.backbone()
         self.fpn()
-        # # features = OrderedDict([(k, v) for k, v in zip(['0', '1', '2', '3', 'pool'], features_)])
-        # proposals, _ = self.rpn(features_)
-        # detections, _ = self.roi(features_, proposals)
-        # detections = self.resize(detections)
-
-        # return detections
+        self.rpn()
+        self.roi()
 
     def original(self, images):
         """Use the original implementation to infer."""

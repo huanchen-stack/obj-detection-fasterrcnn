@@ -1,5 +1,13 @@
 import functools
+import logging
 
+logging.basicConfig(
+    filename='partition.log', 
+    filemode='w',
+    encoding='utf-8', 
+    format='%(message)s', 
+    level=logging.DEBUG
+)
 class PartitionManager(object):
     """
     Requires the input *instance* to have:
@@ -33,19 +41,19 @@ class PartitionManager(object):
     def __call__(self, *args):
         if self.filtering:
             if self.label in self.instance.exec_labels:
-                print("in exec", self.label)
+                logging.info(f"executing \t{self.label}")
                 args = [self.instance.args[arg] for arg in args]
                 return self.func(*args)
             else:
-                print("not in exec")
+               logging.info(f"skipping \t{self.label}")
         else:
-            print("skimming", self.label)
+            logging.info(f"skimming \t{self.label}")
             args = [self.instance.args[arg] for arg in args]
             self.instance.args[self.label] = self.func(*args)
             
-            # FIXME: MODIFY THIS SEGMENT
-            # Get all layer names
-            self.instance.exec_labels.add(self.label)
+            # # FIXME: MODIFY THIS SEGMENT
+            # # Get all layer names
+            # self.instance.exec_labels.add(self.label)
 
 def partition_manager(instance, filtering, suffix):
     def partition_manager_decorator(func):
