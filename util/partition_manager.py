@@ -43,9 +43,9 @@ class PartitionManager(object):
             args = [self.instance.args[arg] for arg in args]
             self.instance.args[self.label] = self.func(*args)
             
-            # # FIXME: MODIFY THIS SEGMENT
-            # # Get all layer names
-            # self.instance.exec_labels.add(self.label)
+            # FIXME: MODIFY THIS SEGMENT
+            # Get all layer names
+            self.instance.exec_labels.add(self.label)
 
 def partition_manager(instance, filtering, suffix):
     def partition_manager_decorator(func):

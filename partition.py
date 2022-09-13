@@ -1,5 +1,3 @@
-from email.mime import image
-from gc import enable
 import torch
 from torch.profiler import profile, record_function, ProfilerActivity
 import torchvision
@@ -28,50 +26,10 @@ import functools
 from util.timer import Clock
 from util.memorizer import MemRec
 from util.utils import _default_anchorgen, permute_and_flatten, _tensor_size, _size_helper
+from util.partition_manager import PartitionManager, partition_manager
 
 
 class FasterRCNN(torch.nn.Module):
-
-    class Exec():
-        """
-        Requires the input instance to have:
-            1. self.exec_labels = set() or []
-            2. self.args = {}  
-
-        Need to manually specify suffix for namings when:
-            1. storing intermediate tensors into self.args
-            2. loading intermediate tensors by reading strings
-        """
-        def __init__(self, func, instance, filtering, suffix):
-            self.func = func
-            self.instance  = instance
-            self.filtering = filtering
-            self.label = self.func.__name__ + suffix
-
-            functools.update_wrapper(self, func)
-
-        def __call__(self, *args):
-            if not self.filtering:
-                if self.label in self.instance.exec_labels:
-                    print("in exec", self.label)
-                    args = [self.instance.args[arg] for arg in args]
-                    return self.func(*args)
-                else:
-                    print("not in exec")
-            else:
-                print("skimming", self.label)
-                args = [self.instance.args[arg] for arg in args]
-                self.instance.args[self.label] = self.func(*args)
-                
-                # FIXME: MODIFY THIS SEGMENT
-                self.instance.exec_labels.add(self.label)
-
-    @staticmethod
-    def check_exec(instance, filtering, suffix):
-        def check_decorator(func):
-            return FasterRCNN.Exec(func, instance, filtering, suffix)
-        return check_decorator
-
 
     def __init__(self, partitioned=False):
         """
@@ -89,62 +47,21 @@ class FasterRCNN(torch.nn.Module):
         """
         super(FasterRCNN, self).__init__()
 
+
+        #########################################################
+        ############## Needed for PartitionManager ##############
+        #########################################################
         self.exec_labels = set()
+        self.args = {}
+        self.filtering = False
+        #########################################################
 
-        self.args = {
-            'image': 1,
-        }
-
-        filtering = True
-
-        @FasterRCNN.check_exec(self, filtering=filtering, suffix="_0")
-        def transform(image):
-            transform = image + 1
-            return transform
-
-        print(self.args)
-
-        transform("image")
-
-        print(self.args)
-
-        filtering=False
-
-        @FasterRCNN.check_exec(self, filtering=filtering, suffix="_0")
-        def transform(image):
-            transform = image + 1
-            return transform
-        transform("image")
-
-        @FasterRCNN.check_exec(self, filtering=filtering, suffix="_1")
-        def transform(image):
-            transform = image + 1
-            return transform
-        transform("image")
-
-        exit(1)
-
-
-        # load model (pretrained fasterrcnn)
         if torchvision.__version__ == '0.13.0':
             self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights='FasterRCNN_ResNet50_FPN_Weights.COCO_V1').eval()
         else:
             self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True).eval()
         self.partitioned = partitioned
 
-        # for profiling data
-        self.timer = Clock()
-        self.memorizer = MemRec()
-        self.mem = False  # get memory consumption
-        self.warmup = 3  # num of warmup iterations
-
-        # for storing intermediate tensors and final outputs
-        self.logger = {
-            "profiles": [],
-            "dependencies": [],
-        }
-
-        # for jit (conv, ReLU should be initalized at __init__)
         if torchvision.__version__ == '0.13.0':
             self.conv = list(self.model.rpn.head.conv.modules())[2]
             self.ReLU = list(self.model.rpn.head.conv.modules())[3]
@@ -152,209 +69,105 @@ class FasterRCNN(torch.nn.Module):
             self.conv = self.model.rpn.head.conv
             self.ReLU = torch.nn.ReLU()
 
-    def _profiler_wrapper(self, func, name, ignore_payload=False):
-        """
-        This function is a profiling helper that does the following:
-            1. warm up gpu n (warmup) times
-            2. get runtime (WALL)
-        Args:
-            1. (layer) func (Function): 
-                a. MUST NOT modify any intermediate variables
-                b. MUST return the output of corresponding layer
-                c. output must be a Tensor or a List of Tensors
-            2. name (String): MUST be consistant with the dependencies
-        """
-        # warm up (default twice)
-        for i in range(self.warmup):
-            output = func()
+    def transform(self):
 
-        # get layer runtime (WALL)
-        self.timer.tic()
-        func()
-        self.timer.toc()
+        @partition_manager(self, self.filtering, "")
+        def img_transform(x):
+            return self.model.transform(x, None)[0]
+        img_transform("images")
 
-        if self.mem: # get layer memory consumption
-            with profile(
-                    activities=
-                    [
-                        ProfilerActivity.CPU
-                    ] if not torch.cuda.is_available() else
-                    [
-                        ProfilerActivity.CPU,
-                        ProfilerActivity.CUDA
-                    ],
-                    profile_memory=True, record_shapes=True
-                ) as prof:
-                with record_function("model_inference"):
-                    func()
-            prof_report = str(prof.key_averages().table()).split("\n")
-            mem_out = self.memorizer.get_mem(prof_report, torch.cuda.is_available())
+    def backbone(self):
 
-        # output format:
-        #   layername,time,mem_cpu,mem_cuda,size,macs
-        #   undefined: -1
-        data_payload = "IGNORED" if ignore_payload else _size_helper(output)[1]
-        if not self.mem:
-            self.logger["profiles"].append(f"{name},{self.timer.get_time()},-1,-1,{data_payload},-1")
-        elif self.mem and torch.cuda.is_available():
-            self.logger["profiles"].append(f"{name},{self.timer.get_time()},{mem_out[0]},{mem_out[1]},{data_payload},-1")
-        elif self.mem and not torch.cuda.is_available():
-            self.logger["profiles"].append(f"{name},{self.timer.get_time()},{mem_out},-1,{data_payload},-1")
-        else:
-            assert False, f"Profiler: unknown profiling configurations."
-        
-    def _dependency_writer(self, source, target):
-        self.logger["dependencies"].append(f"{source},{target}")
+        self.args['img_tensors'] = self.args["img_transform"].tensors
+        prevlayer = "img_tensors"
 
-    def _logger_print(self):
-        print("================================================")
-        print("=================== PROFILES ===================")
-        print("================================================")
-        for line in self.logger["profiles"]:
-            print(line)
-        print()
-        print("================================================")
-        print("================== DEPENDENCIES ================")
-        print("================================================")
-        for line in self.logger["dependencies"]:
-            print(line)
+        for name, layer in self.model.backbone.body.named_children():
 
-    def transform(self, images):
-        # load module
-        transform = self.model.transform
+            @partition_manager(self, self.filtering, suffix=f"_{name}")
+            def backbone(x):
+                return layer(x)
+            backbone(prevlayer)
 
-        # forward
-        #   setup variables
-        images = [images[0]]
-        #   setup func
-        def _transform():
-            return transform(images, None)[0]
-        self._profiler_wrapper(_transform, "transform")
-        #   get layer outputs
-        images_ = _transform()
-        #   logger outputs
-        self._dependency_writer("input", "transform")
+            prevlayer = f"backbone_{name}"
 
-        return images_
+        self.args['x'] = [
+            "backbone_layer1",
+            "backbone_layer2",
+            "backbone_layer3",
+            "backbone_layer4",
+        ]  # for convenience
 
-    def backbone(self, img_tensors):
-        # load module
-        backbone = self.model.backbone.body
-        
-        # forward
-        #   setup variables
-        x = []
-        tmp_x = img_tensors
-        last_name = "transform"
-        for name, layer in backbone.named_children():
-            # setup func
-            def _layer():
-                return layer(tmp_x)
-            self._profiler_wrapper(_layer, name)
-            tmp_x_ = _layer()
-            # logger outputs
-            self._dependency_writer(last_name, name)
-            last_name = name
-            # get layer outputs
-            tmp_x = tmp_x_
-            if name[0:5] == "layer":
-                x.append(tmp_x.clone().detach())
-        
-        return x
-
-    def get_result_from_inner_blocks(self, x: Tensor, idx: int) -> Tensor:
-        fpn = self.model.backbone.fpn
-        num_blocks = len(fpn.inner_blocks)
+    def get_result_from_inner_blocks(self, prevlayer, idx):
+        num_blocks = len(self.model.backbone.fpn.inner_blocks)
         if idx < 0:
             idx += num_blocks
-        out = x
-        for i, module in enumerate(fpn.inner_blocks):
+
+        for i, module in enumerate(self.model.backbone.fpn.inner_blocks):
             if i == idx:
-                # forward
-                #   setup func
-                def _inner():
+                
+                @partition_manager(self, self.filtering, suffix=f"_{idx}")
+                def fpn_inner(x):
                     return module(x)
-                self._profiler_wrapper(_inner, f"inner_{idx}")
-                #   get layer outputs
-                out = _inner()
-                #   logger outputs
+                fpn_inner(prevlayer)
 
-        return out
+        return f"fpn_inner_{idx}"
 
-    def get_result_from_layer_blocks(self, x: Tensor, idx: int) -> Tensor:
-        fpn = self.model.backbone.fpn
-        num_blocks = len(fpn.layer_blocks)
+    def get_result_from_layer_blocks(self, prevlayer, idx):
+        num_blocks = len(self.model.backbone.fpn.layer_blocks)
         if idx < 0:
             idx += num_blocks
-        out = x
-        for i, module in enumerate(fpn.layer_blocks):
-            if i == idx:
-                # forward
-                #   setup func
-                def _layer():
-                    return module(x)
-                self._profiler_wrapper(_layer, f"layer_{idx}")
-                #   get layer outputs
-                out = _layer()
-                #   logger outputs
         
-        return out
+        for i, module in enumerate(self.model.backbone.fpn.layer_blocks):
+            if i == idx:
+                
+                @partition_manager(self, self.filtering, suffix=f"_{idx}")
+                def fpn_layer(x):
+                    return module(x)
+                fpn_layer(prevlayer)
 
-    def fpn(self, x: List[Tensor]) -> List[Tensor]:
-        # load module
-        fpn = self.model.backbone.fpn
+        return f"fpn_layer_{idx}" 
 
-        # forward
+    def fpn(self):
+
         features_ = []
+
+        x = self.args['x']
 
         last_inner = self.get_result_from_inner_blocks(x[-1], -1)
         features_.append(self.get_result_from_layer_blocks(last_inner, -1))
-        self._dependency_writer("layer4", "inner_3")
-        self._dependency_writer("inner_3", "layer_3")
-
+        
         for idx in range(len(x) - 2, -1, -1):
             # inner_{idx}
             inner_lateral = self.get_result_from_inner_blocks(x[idx], idx)
-            feat_shape = inner_lateral.shape[-2:]
-            self._dependency_writer(f"layer{idx+1}", f"inner_{idx}")
+            feat_shape = self.args[inner_lateral].shape[-2:]
 
             # interpolate
-            #   setup func
-            def _interpolate():
-                return F.interpolate(last_inner, size=feat_shape, mode="nearest")
-            self._profiler_wrapper(_interpolate, f"interpolate__{idx}")
-            #   get layer output
-            inner_top_down = _interpolate()
-            #   logger output
-            if idx == 2:
-                self._dependency_writer("inner_3", "interpolate__2")
-            else:
-                self._dependency_writer(f"add__{idx+1}", f"interpolate__{idx}")
+            @partition_manager(self, self.filtering, f"_{idx}")
+            def fpn_interpolate(x):
+                return F.interpolate(x, size=feat_shape, mode="nearest")
+            fpn_interpolate(last_inner)
+            inner_top_down = f"fpn_interpolate_{idx}"
 
             # addition
-            last_inner = inner_lateral + inner_top_down
-            self._dependency_writer(f"inner_{idx}", f"add__{idx}")
-            self._dependency_writer(f"interpolate__{idx}", f"add__{idx}")
+            @partition_manager(self, self.filtering, f"_{idx}")
+            def fpn_add(x, y):
+                return x + y
+            fpn_add(inner_lateral, inner_top_down)
+            last_inner = f"fpn_add_{idx}"
 
             # layer_{idx}
             features_.insert(0, self.get_result_from_layer_blocks(last_inner, idx))
-            self._dependency_writer(f"add__{idx}", f"layer_{idx}")
 
         # extra layer
-        if fpn.extra_blocks is not None:
-            # (ALWAYS THIS CASE)
-            # forward
-            #   setup func
-            def _extra():
-                return F.max_pool2d(features_[-1], 1, 2, 0)
-            self._profiler_wrapper(_extra, "extra")
-            #   get layer outputs
-            features_.append(F.max_pool2d(features_[-1], 1, 2, 0))
-            #   logger outputs
-            self._dependency_writer("layer_3", "extra")
+        @partition_manager(self, self.filtering, "")
+        def fpn_extra(x):
+            return F.max_pool2d(x, 1, 2, 0)
+        fpn_extra(features_[-1])
+        
+        features_.append("fpn_extra")
 
-        return features_
-
+        self.args["features_"] = features_  # for convenience
+        
     def rpn_parallel(self, rpn_head: torchvision.models.detection.rpn.RPNHead, feature: Tensor, i: int):
         # getting batch (unnecessary)
         # FIXME: delete this segment
@@ -511,30 +324,11 @@ class FasterRCNN(torch.nn.Module):
         )
 
     def rpn(self, features_):
-        # load module
-        rpn_head = self.model.rpn.head
-
-        # foward
-
-        # FIXME: delete the following segment
-        # load and declare params
-        # for rpn_head
-        # convs = []
-        # convs.append(rpn_head.conv)
-        # device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        # convs.append(torch.nn.ReLU().to(device))
-        # conv = torch.nn.Sequential(*convs)
-
         # for anchor generator
         # get args required for selecting top 1000 for dall 5 feeatures
         objectness_prob = []
         proposals = []
         levels = []
-        # getting batch (unnecessary)
-        # FIXME: delete the following segment
-        # image_range = torch.arange(1, device="cuda:0" if torch.cuda.is_available() else "cpu")
-        # batch_idx = image_range[:, None]
-        batch_idx = torch.tensor([[0]])
 
         # rpn_parallel
         i = 0
@@ -543,10 +337,10 @@ class FasterRCNN(torch.nn.Module):
             # forward
             #   setup func
             def _rpn_parallel():
-                return self.rpn_parallel(rpn_head, feature, i)
+                return self.rpn_parallel(self.model.rpn.head, feature, i)
             self._profiler_wrapper(_rpn_parallel, f"rpn_parallel_f{i}")
             #   get layer outputs
-            box_cls_, level_, proposal_ = self.rpn_parallel(rpn_head, feature, i)
+            box_cls_, level_, proposal_ = self.rpn_parallel(self.model.rpn.head, feature, i)
             #   logger outputs
             if i != 4:
                 self._dependency_writer(f"layer_{i}", f"rpn_parallel_f{i}")
@@ -760,15 +554,16 @@ class FasterRCNN(torch.nn.Module):
     def simulation(self, images):
         """Use the self-partitioned implementation to infer."""
 
-        images = self.transform(images)
-        x = self.backbone(images.tensors)
-        features_ = self.fpn(x)
-        # features = OrderedDict([(k, v) for k, v in zip(['0', '1', '2', '3', 'pool'], features_)])
-        proposals, _ = self.rpn(features_)
-        detections, _ = self.roi(features_, proposals)
-        detections = self.resize(detections)
+        self.args['images'] = [images[0]]
+        self.transform()
+        self.backbone()
+        self.fpn()
+        # # features = OrderedDict([(k, v) for k, v in zip(['0', '1', '2', '3', 'pool'], features_)])
+        # proposals, _ = self.rpn(features_)
+        # detections, _ = self.roi(features_, proposals)
+        # detections = self.resize(detections)
 
-        return detections
+        # return detections
 
     def original(self, images):
         """Use the original implementation to infer."""
@@ -778,36 +573,26 @@ class FasterRCNN(torch.nn.Module):
         return detections
 
     def forward(self, images):
-        """
-        Depend on the mode:
-            if self.partitioned == True:
-                use self-partitioned version
-            else:
-                use the original implementation
-        """
+        self.simulation(images)
+        self.filtering = True
+        self.simulation(images)
 
-        # # DEBUG MODE: Uncomment this segment
-        print(self.simulation(images))
-        self._logger_print()
-        print(self.original(images))
-        print("\t\t\t", self.timer.get_agg())
-        self.timer.tic()
-        self.original(images)
-        self.timer.toc()
-        print(self.timer.get_time())
-        
-        start = time.time()
-        self.original(images)
-        end = time.time()
-        print(f"delta: {end - start}")
-        print(F"{start},{end}")
-        return
 
-        if self.partitioned:
-            return self.simulation(images), self.logger
-        else:
-            return self.original(images), self.logger
 
+from PIL import Image
+from torchvision import transforms
 
 if __name__ == "__main__":
-    FasterRCNN()
+    images = Image.open('input.jpg')
+    images = np.array(images)
+    transform = transforms.Compose([
+                        transforms.ToPILImage(),
+                        transforms.Resize((224,224)),
+                        transforms.ToTensor(),
+                        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+                    ])
+
+    images = transform(images)
+    images = torch.unsqueeze(images, dim=0)
+    fasterrcnn = FasterRCNN()
+    fasterrcnn(images)
