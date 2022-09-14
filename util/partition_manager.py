@@ -1,13 +1,12 @@
 import functools
 import logging
 
-logging.basicConfig(
-    filename='partition.log', 
-    filemode='w',
-    encoding='utf-8', 
-    format='%(message)s', 
-    level=logging.DEBUG
-)
+root_logger= logging.getLogger()
+root_logger.setLevel(logging.DEBUG) # or whatever
+handler = logging.FileHandler('partition.log', 'w', 'utf-8') # or whatever
+handler.setFormatter(logging.Formatter('%(message)s')) # or whatever
+root_logger.addHandler(handler)
+
 class PartitionManager(object):
     """
     Requires the input *instance* to have:
