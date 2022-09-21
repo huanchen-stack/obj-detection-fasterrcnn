@@ -125,7 +125,7 @@ class FasterRCNN(torch.nn.Module):
                     return module(x)
                 fpn_inner(prevlayer)
 
-        return f"fpn_inner_{idx}"
+        return f"fpn_inner_{idx},)"
 
     def get_result_from_layer_blocks(self, prevlayer, idx):
         num_blocks = len(self.model.backbone.fpn.layer_blocks)
@@ -161,7 +161,7 @@ class FasterRCNN(torch.nn.Module):
             def fpn_interpolate(x):
                 return F.interpolate(x, size=feat_shape, mode="nearest")
             fpn_interpolate(last_inner)
-            inner_top_down = f"fpn_interpolate_{idx}"
+            inner_top_down = f"fpn_interpolate_,){idx}"
 
             # addition
             @partition_manager(self, self.filtering, f"_{idx}")
@@ -466,48 +466,54 @@ class FasterRCNN(torch.nn.Module):
         detections = self.model(images)
         return detections
 
-    def forward(self, images, exec_labels=None):
+    def forward(self, images, list_exec_labels=None, t_transfer=None):
         """This forward function returns the execution time of a given partition."""
-        self.simulation(images)     # skimming
+        print("Skimming...")
+        self.simulation(images)         # skimming
         self.filtering = True       
         
-        self.simulation(images)     # warm up (use baseline)
-        self.simulation(images)     # warm up (use baseline)
+        print("Warming Up (1)...")
+        self.simulation(images)         # warm up (use baseline)
+        print("Warming Up (2)...")
+        self.simulation(images)         # warm up (use baseline)
 
+        print("Baseline...")
         starter = torch.cuda.Event(enable_timing=True)
         ender = torch.cuda.Event(enable_timing=True)
         torch.cuda.synchronize()
         starter.record()
-        self.simulation(images)     # baseline
+        self.simulation(images)         # baseline
         ender.record()
         torch.cuda.synchronize()
         delta_baseline = starter.elapsed_time(ender)/1000
-
-        if exec_labels is not None:
-            self.exec_labels = exec_labels        
-        starter = torch.cuda.Event(enable_timing=True)
-        ender = torch.cuda.Event(enable_timing=True)
-        torch.cuda.synchronize()
-        starter.record()
-        self.simulation(images)     # partition
-        ender.record()
-        torch.cuda.synchronize()
-        delta_partition = starter.elapsed_time(ender)/1000
-
+        
+        print("Overhead...")
         self.exec_labels = []
         torch.cuda.synchronize()
         starter.record()
-        self.simulation(images)     # find cpu overhead caused by functools
+        self.simulation(images)         # find cpu overhead caused by functools
         ender.record()
         torch.cuda.synchronize()
         delta_overhead = starter.elapsed_time(ender)/1000
         
-        return {
-            "baseline": delta_baseline,
-            "partition": delta_partition,
-            "overhead": delta_overhead,
-            "speed_up_rate": (delta_partition - delta_overhead) / (delta_baseline - delta_overhead)
-        }
+        delta_baseline -= delta_overhead
+
+        # assert list_exec_labels is not None, "List exec labels is NONE"
+        delta_partitions = 0 
+        for exec_labels in list_exec_labels:
+            self.exec_labels = exec_labels  
+            starter = torch.cuda.Event(enable_timing=True)
+            ender = torch.cuda.Event(enable_timing=True)
+            torch.cuda.synchronize()
+            starter.record()
+            self.simulation(images)     # partition
+            ender.record()
+            torch.cuda.synchronize()
+            delta_partitions += starter.elapsed_time(ender)/1000 - delta_overhead
+
+        delta_partitions += t_transfer
+                    
+        print(delta_baseline, delta_partitions, 1 - (delta_partitions/delta_baseline))
 
 from PIL import Image
 from torchvision import transforms
@@ -515,10 +521,58 @@ import json
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
+dictionary = {
+    "transform" : "img_transform", 
+    "conv1"     : "backbone_conv1", 
+    "bn1"       : "backbone_bn1", 
+    "relu"      : "backbone_relu",
+    "maxpool"   : "backbone_maxpool", 
+    "layer1"    : "backbone_layer1", 
+    "layer2"    : "backbone_layer2", 
+    "layer3"    : "backbone_layer3", 
+    "layer4"    : "backbone_layer4", 
+    "inner_3"   : "fpn_inner_3", 
+    "layer_3"   : "fpn_layer_3", 
+    "inner_2"   : "fpn_inner_2", 
+    "interpolate__2": "fpn_interpolate_2", 
+    "add__2"    : "fpn_add_2", 
+    "layer_2"   : "fpn_layer_2", 
+    "inner_1"   : "fpn_inner_1", 
+    "interpolate__1": "fpn_interpolate_1", 
+    "add__1"    : "fpn_add_1", 
+    "layer_1"   : "fpn_layer_1", 
+    "inner_0"   : "fpn_inner_0", 
+    "interpolate__0": "fpn_interpolate_0", 
+    "add__0"    : "fpn_add_0", 
+    "layer_0"   : "fpn_layer_0", 
+    "extra"     : "fpn_extra", 
+    "rpn_parallel_f0": "rpn_parallel_0", 
+    "rpn_parallel_f1": "rpn_parallel_1", 
+    "rpn_parallel_f2": "rpn_parallel_2", 
+    "rpn_parallel_f3": "rpn_parallel_3", 
+    "rpn_parallel_f4": "rpn_parallel_4", 
+    "rpn_merger": "rpn_merger", 
+    "box_roi_pool": "roi_box_pooling", 
+    "fc6"       : "roi_head_fc6", 
+    "fc7"       : "roi_head_fc7", 
+    "cls_score" : "roi_cls_score", 
+    "bbox_pred" : "roi_bbox_pred", 
+    "postprocess_detections": "roi_postprocess_detections",
+}
+
+def translate(layernames):
+    res = []
+    for layer in layernames:
+        if layer in {"input", "resize", "output"}:
+            continue
+        res.append(dictionary[layer])
+    return res
+
 
 if __name__ == "__main__":
     print("test input: json")
-    f = open("critical_path.json", "r")
+    # f = open("critical_path.json", "r")
+    f = open("1000.json", "r")
     critical_path = json.load(f)
     
     images = Image.open('input.jpg')
@@ -538,14 +592,16 @@ if __name__ == "__main__":
     bandwidth = critical_path[0]["content"]
     critical_path.pop(0)
 
+    parts = []
+    t_transfer = 0
     for node in critical_path:
         if node["type"] == "exec":
-            d = fasterrcnn(images, node["content"])
-            print(d)
+            content = translate(node["content"])
+            parts.append(content)
         elif node["type"] == "data":
-            d = node["content"] / bandwidth
-            print(d)
+            t = node["content"] / bandwidth
+            t_transfer += t
         else: 
             assert False, f"Node TYPE-{node['type']} not recognized..."
     
-
+    print(fasterrcnn(images, parts, t_transfer))
