@@ -1,0 +1,25 @@
+[
+    {
+        "type": "bandwidth",
+        "content": 1000
+    },
+    {
+        "type": "exec",
+        "content": [
+            "input",
+            "transform",
+            "conv1",
+            "bn1"
+        ]
+    },
+    {
+        "type": "data",
+        "content": 10.0
+    },
+    {
+        "type": "exec",
+        "content": [
+            "relu"
+        ]
+    }
+]

@@ -466,17 +466,61 @@ class FasterRCNN(torch.nn.Module):
         detections = self.model(images)
         return detections
 
-    def forward(self, images):
-        self.simulation(images)
-        self.filtering = True
-        self.simulation(images)
+    def forward(self, images, exec_labels=None):
+        """This forward function returns the execution time of a given partition."""
+        self.simulation(images)     # skimming
+        self.filtering = True       
+        
+        self.simulation(images)     # warm up (use baseline)
+        self.simulation(images)     # warm up (use baseline)
 
+        starter = torch.cuda.Event(enable_timing=True)
+        ender = torch.cuda.Event(enable_timing=True)
+        torch.cuda.synchronize()
+        starter.record()
+        self.simulation(images)     # baseline
+        ender.record()
+        torch.cuda.synchronize()
+        delta_baseline = starter.elapsed_time(ender)/1000
 
+        if exec_labels is not None:
+            self.exec_labels = exec_labels        
+        starter = torch.cuda.Event(enable_timing=True)
+        ender = torch.cuda.Event(enable_timing=True)
+        torch.cuda.synchronize()
+        starter.record()
+        self.simulation(images)     # partition
+        ender.record()
+        torch.cuda.synchronize()
+        delta_partition = starter.elapsed_time(ender)/1000
+
+        self.exec_labels = []
+        torch.cuda.synchronize()
+        starter.record()
+        self.simulation(images)     # find cpu overhead caused by functools
+        ender.record()
+        torch.cuda.synchronize()
+        delta_overhead = starter.elapsed_time(ender)/1000
+        
+        return {
+            "baseline": delta_baseline,
+            "partition": delta_partition,
+            "overhead": delta_overhead,
+            "speed_up_rate": (delta_partition - delta_overhead) / (delta_baseline - delta_overhead)
+        }
 
 from PIL import Image
 from torchvision import transforms
+import json
+
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
 
 if __name__ == "__main__":
+    print("test input: json")
+    f = open("critical_path.json", "r")
+    critical_path = json.load(f)
+    
     images = Image.open('input.jpg')
     images = np.array(images)
     transform = transforms.Compose([
@@ -487,6 +531,21 @@ if __name__ == "__main__":
                     ])
 
     images = transform(images)
-    images = torch.unsqueeze(images, dim=0)
-    fasterrcnn = FasterRCNN()
-    fasterrcnn(images)
+    images = torch.unsqueeze(images, dim=0).to(device)
+    fasterrcnn = FasterRCNN().to(device)
+    
+    assert critical_path[0]["type"] == "bandwidth"
+    bandwidth = critical_path[0]["content"]
+    critical_path.pop(0)
+
+    for node in critical_path:
+        if node["type"] == "exec":
+            d = fasterrcnn(images, node["content"])
+            print(d)
+        elif node["type"] == "data":
+            d = node["content"] / bandwidth
+            print(d)
+        else: 
+            assert False, f"Node TYPE-{node['type']} not recognized..."
+    
+
