@@ -125,7 +125,7 @@ class FasterRCNN(torch.nn.Module):
                     return module(x)
                 fpn_inner(prevlayer)
 
-        return f"fpn_inner_{idx},)"
+        return f"fpn_inner_{idx}"
 
     def get_result_from_layer_blocks(self, prevlayer, idx):
         num_blocks = len(self.model.backbone.fpn.layer_blocks)
@@ -161,7 +161,7 @@ class FasterRCNN(torch.nn.Module):
             def fpn_interpolate(x):
                 return F.interpolate(x, size=feat_shape, mode="nearest")
             fpn_interpolate(last_inner)
-            inner_top_down = f"fpn_interpolate_,){idx}"
+            inner_top_down = f"fpn_interpolate_{idx}"
 
             # addition
             @partition_manager(self, self.filtering, f"_{idx}")
@@ -502,8 +502,6 @@ class FasterRCNN(torch.nn.Module):
         delta_partitions = 0 
         for exec_labels in list_exec_labels:
             self.exec_labels = exec_labels  
-            starter = torch.cuda.Event(enable_timing=True)
-            ender = torch.cuda.Event(enable_timing=True)
             torch.cuda.synchronize()
             starter.record()
             self.simulation(images)     # partition
