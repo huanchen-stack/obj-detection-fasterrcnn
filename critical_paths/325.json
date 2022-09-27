@@ -1,0 +1,54 @@
+[
+    {
+        "type": "bandwidth",
+        "content": 325.0
+    },
+    {
+        "type": "exec",
+        "content": [
+            "input",
+            "transform",
+            "conv1",
+            "bn1",
+            "relu",
+            "maxpool",
+            "layer1",
+            "layer2",
+            "layer3",
+            "inner_2",
+            "layer4",
+            "inner_3",
+            "interpolate__2",
+            "add__2",
+            "layer_2",
+            "rpn_parallel_f2",
+            "interpolate__1",
+            "inner_1",
+            "add__1",
+            "layer_1",
+            "rpn_parallel_f1",
+            "interpolate__0",
+            "inner_0",
+            "add__0",
+            "layer_0",
+            "rpn_parallel_f0",
+            "rpn_merger",
+            "box_roi_pool",
+            "fc6",
+            "fc7",
+            "cls_score",
+            "bbox_pred",
+            "postprocess_detections"
+        ]
+    },
+    {
+        "type": "data",
+        "content": 0.0
+    },
+    {
+        "type": "exec",
+        "content": [
+            "resize"
+        ]
+    }
+]

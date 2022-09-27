@@ -22,6 +22,7 @@ import csv
 import time
 # from sigfig import round
 import functools
+import os
 from tqdm import tqdm
 
 from util.timer import Clock
@@ -577,9 +578,9 @@ def translate(layernames):
 
 if __name__ == "__main__":
     # f = open("critical_path.json", "r")
-    f = open("1000.json", "r")
-    critical_path = json.load(f)
-    
+    # f = open(input(), "r")
+    # critical_path = json.load(f)
+	
     images = Image.open('input.jpg')
     images = np.array(images)
     transform = transforms.Compose([
@@ -592,28 +593,46 @@ if __name__ == "__main__":
     images = transform(images)
     images = torch.unsqueeze(images, dim=0).to(device)
     fasterrcnn = FasterRCNN().to(device)
-    
-    assert critical_path[0]["type"] == "bandwidth"
-    bandwidth = critical_path[0]["content"]
-    critical_path.pop(0)
+   
+    f_paths = []
+    directory = "critical_paths"
+    for filename in os.listdir(directory):
+        f = os.path.join(directory, filename)
+        # checking if it is a file
+        if os.path.isfile(f):
+            f_paths.append(f)
+    f_paths = sorted(f_paths, key=lambda e: int((e.split('/')[1]).split('.')[0]))
 
-    parts = []
-    t_transfer = 0
-    for node in critical_path:
-        if node["type"] == "exec":
-            content = translate(node["content"])
+    for f_path in f_paths:
+
+        f = open(f_path, 'r')
+        critical_path = json.load(f)
+        f.close()
+
+        assert critical_path[0]["type"] == "bandwidth"
+        bandwidth = critical_path[0]["content"]
+        critical_path.pop(0)
+
+        parts = []
+        t_transfer = 0
+        for node in critical_path:
+            if node["type"] == "exec":
+                content = translate(node["content"])
             parts.append(content)
         elif node["type"] == "data":
             t = node["content"] / bandwidth * 8
             t_transfer += t
         else: 
             assert False, f"Node TYPE-{node['type']} not recognized..."
-    
-    f = open('tmp.csv', 'w')
-    f.write(f"delta_baseline,delta_partitions,speed_up_rates\n")
-    for i in tqdm(range(20)):
+            
         delta_baseline, delta_partitions, speed_up_rate = fasterrcnn(images, parts, t_transfer)
-        f.write(f"{delta_baseline},{delta_partitions},{speed_up_rate}\n")
-    f.close()
+        print(f"{bandwidth},{delta_baseline},{delta_partitions},{speed_up_rate}")
+    
+    # f = open('tmp.csv', 'w')
+    # f.write(f"delta_baseline,delta_partitions,speed_up_rates\n")
+    # for i in tqdm(range(0)):
+        # delta_baseline, delta_partitions, speed_up_rate = fasterrcnn(images, parts, t_transfer)
+        # f.write(f"{delta_baseline},{delta_partitions},{speed_up_rate}\n")
+    # f.close()
 
 
