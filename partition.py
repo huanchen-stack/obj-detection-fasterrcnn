@@ -22,6 +22,7 @@ import csv
 import time
 # from sigfig import round
 import functools
+from tqdm import tqdm
 
 from util.timer import Clock
 from util.memorizer import MemRec
@@ -30,6 +31,23 @@ from util.partition_manager import PartitionManager, partition_manager
 
 
 class FasterRCNN(torch.nn.Module):
+
+    exec_labels = {
+        "img_transform", 
+        "backbone_conv1", "backbone_bn1", "backbone_relu", "backbone_maxpool", 
+        "backbone_layer1", "backbone_layer2", "backbone_layer3", "backbone_layer4", 
+        "fpn_inner_3", "fpn_layer_3", 
+        "fpn_inner_2", "fpn_interpolate_2", "fpn_add_2", "fpn_layer_2", 
+        "fpn_inner_1", "fpn_interpolate_1", "fpn_add_1", "fpn_layer_1", 
+        "fpn_inner_0", "fpn_interpolate_0", "fpn_add_0", "fpn_layer_0", 
+        "fpn_extra", 
+        "rpn_parallel_0", "rpn_parallel_1", "rpn_parallel_2", "rpn_parallel_3", "rpn_parallel_4", 
+        "rpn_merger", 
+        "roi_box_pooling", 
+        "roi_head_fc6", "roi_head_fc7", 
+        "roi_cls_score", "roi_bbox_pred", 
+        "roi_postprocess_detections",
+    }
 
     def __init__(self, partitioned=False):
         """
@@ -51,22 +69,7 @@ class FasterRCNN(torch.nn.Module):
         #########################################################
         ############## Needed for PartitionManager ##############
         #########################################################
-        self.exec_labels = {
-            "img_transform", 
-            "backbone_conv1", "backbone_bn1", "backbone_relu", "backbone_maxpool", 
-            "backbone_layer1", "backbone_layer2", "backbone_layer3", "backbone_layer4", 
-            "fpn_inner_3", "fpn_layer_3", 
-            "fpn_inner_2", "fpn_interpolate_2", "fpn_add_2", "fpn_layer_2", 
-            "fpn_inner_1", "fpn_interpolate_1", "fpn_add_1", "fpn_layer_1", 
-            "fpn_inner_0", "fpn_interpolate_0", "fpn_add_0", "fpn_layer_0", 
-            "fpn_extra", 
-            "rpn_parallel_0", "rpn_parallel_1", "rpn_parallel_2", "rpn_parallel_3", "rpn_parallel_4", 
-            "rpn_merger", 
-            "roi_box_pooling", 
-            "roi_head_fc6", "roi_head_fc7", 
-            "roi_cls_score", "roi_bbox_pred", 
-            "roi_postprocess_detections",
-        }
+        self.exec_labels = {}
         self.args = {}
         self.filtering = False
         #########################################################
@@ -468,16 +471,17 @@ class FasterRCNN(torch.nn.Module):
 
     def forward(self, images, list_exec_labels=None, t_transfer=None):
         """This forward function returns the execution time of a given partition."""
-        print("Skimming...")
+        # print("Skimming...")
         self.simulation(images)         # skimming
         self.filtering = True       
         
-        print("Warming Up (1)...")
+        self.exec_labels = FasterRCNN.exec_labels
+        # print("Warming Up (1)...")
         self.simulation(images)         # warm up (use baseline)
-        print("Warming Up (2)...")
+        # print("Warming Up (2)...")
         self.simulation(images)         # warm up (use baseline)
 
-        print("Baseline...")
+        # print("Baseline...")
         starter = torch.cuda.Event(enable_timing=True)
         ender = torch.cuda.Event(enable_timing=True)
         torch.cuda.synchronize()
@@ -487,9 +491,11 @@ class FasterRCNN(torch.nn.Module):
         torch.cuda.synchronize()
         delta_baseline = starter.elapsed_time(ender)/1000
         
-        print("Overhead...")
+        # print("Overhead...")
         self.exec_labels = []
         torch.cuda.synchronize()
+        self.simulation(images)
+        self.simulation(images)
         starter.record()
         self.simulation(images)         # find cpu overhead caused by functools
         ender.record()
@@ -498,7 +504,7 @@ class FasterRCNN(torch.nn.Module):
         
         delta_baseline -= delta_overhead
 
-        # assert list_exec_labels is not None, "List exec labels is NONE"
+        # print("Partitions...")
         delta_partitions = 0 
         for exec_labels in list_exec_labels:
             self.exec_labels = exec_labels  
@@ -511,13 +517,15 @@ class FasterRCNN(torch.nn.Module):
 
         delta_partitions += t_transfer
                     
-        print(delta_baseline, delta_partitions, 1 - (delta_partitions/delta_baseline))
+        return delta_baseline, delta_partitions, 1 - (delta_partitions/delta_baseline)
 
 from PIL import Image
 from torchvision import transforms
 import json
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+print(f"Using device: {device}")
 
 dictionary = {
     "transform" : "img_transform", 
@@ -568,7 +576,6 @@ def translate(layernames):
 
 
 if __name__ == "__main__":
-    print("test input: json")
     # f = open("critical_path.json", "r")
     f = open("1000.json", "r")
     critical_path = json.load(f)
@@ -597,9 +604,16 @@ if __name__ == "__main__":
             content = translate(node["content"])
             parts.append(content)
         elif node["type"] == "data":
-            t = node["content"] / bandwidth
+            t = node["content"] / bandwidth * 8
             t_transfer += t
         else: 
             assert False, f"Node TYPE-{node['type']} not recognized..."
     
-    print(fasterrcnn(images, parts, t_transfer))
+    f = open('tmp.csv', 'w')
+    f.write(f"delta_baseline,delta_partitions,speed_up_rates\n")
+    for i in tqdm(range(20)):
+        delta_baseline, delta_partitions, speed_up_rate = fasterrcnn(images, parts, t_transfer)
+        f.write(f"{delta_baseline},{delta_partitions},{speed_up_rate}\n")
+    f.close()
+
+

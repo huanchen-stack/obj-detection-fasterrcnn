@@ -1,0 +1,4 @@
+echo "nvpmodel -m 0"
+nvpmodel -m 0
+echo "jetson_clocks"
+jetson_clocks
