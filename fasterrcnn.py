@@ -726,3 +726,28 @@ class FasterRCNN(torch.nn.Module):
             return self.simulation(images), self.logger
         else:
             return self.original(images), self.logger
+
+
+from PIL import Image
+from torchvision import transforms
+
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
+
+
+if __name__ == "__main__":
+    
+    images = Image.open('input.jpg')
+    images = np.array(images)
+    transform = transforms.Compose([
+                        transforms.ToPILImage(),
+                        transforms.Resize((224,224)),
+                        transforms.ToTensor(),
+                        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+                    ])
+
+    images = transform(images)
+    images = torch.unsqueeze(images, dim=0).to(device)
+    fasterrcnn = FasterRCNN().to(device)
+    
+    fasterrcnn(images)
