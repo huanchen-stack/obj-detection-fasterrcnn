@@ -1,7 +1,7 @@
 [
     {
         "type": "bandwidth",
-        "content": 550.0
+        "content": 3500.0
     },
     {
         "type": "exec",
@@ -28,6 +28,7 @@
             "add__0",
             "layer_0",
             "rpn_parallel_f0",
+            "rpn_parallel_f3",
             "rpn_merger",
             "box_roi_pool",
             "fc6",
@@ -35,16 +36,6 @@
             "cls_score",
             "bbox_pred",
             "postprocess_detections"
-        ]
-    },
-    {
-        "type": "data",
-        "content": 0.0
-    },
-    {
-        "type": "exec",
-        "content": [
-            "resize"
         ]
     }
 ]

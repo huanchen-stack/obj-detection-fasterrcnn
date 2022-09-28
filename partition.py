@@ -470,55 +470,64 @@ class FasterRCNN(torch.nn.Module):
         detections = self.model(images)
         return detections
 
-    def forward(self, images, list_exec_labels=None, t_transfer=None):
+    def forward(self, images, critical_path, bandwidth):
         """This forward function returns the execution time of a given partition."""
-        # print("Skimming...")
-        self.simulation(images)         # skimming
-        self.filtering = True       
-        
-        self.exec_labels = FasterRCNN.exec_labels
-        # print("Warming Up (1)...")
-        self.simulation(images)         # warm up (use baseline)
-        # print("Warming Up (2)...")
-        self.simulation(images)         # warm up (use baseline)
 
-        # print("Baseline...")
+        parts = []
+        t_transfer = 0
+
+        if critical_path is None:
+            # default: run all layers if critical_path is not given
+            parts.append(FasterRCNN.exec_labels)
+        else:
+            for node in critical_path:
+                if node["type"] == "exec":
+                    content = translate(node["content"])
+                    parts.append(content)
+                elif node["type"] == "data":
+                    t = node["content"] / bandwidth * 8
+                    t_transfer += t
+                else: 
+                    assert False, f"Node TYPE-{node['type']} not recognized..."
+        # print(f"Estimated data transfer time: {t_transfer}")
+        # print(f"Layers to be executed: {parts}")
+        
+        self.simulation(images)         # skimming
+
+        self.filtering = True           # start filtering
         starter = torch.cuda.Event(enable_timing=True)
         ender = torch.cuda.Event(enable_timing=True)
-        torch.cuda.synchronize()
-        starter.record()
-        self.simulation(images)         # baseline
-        ender.record()
-        torch.cuda.synchronize()
-        delta_baseline = starter.elapsed_time(ender)/1000
         
-        # print("Overhead...")
-        self.exec_labels = []
-        torch.cuda.synchronize()
-        self.simulation(images)
-        self.simulation(images)
-        starter.record()
-        self.simulation(images)         # find cpu overhead caused by functools
-        ender.record()
-        torch.cuda.synchronize()
-        delta_overhead = starter.elapsed_time(ender)/1000
         
-        delta_baseline -= delta_overhead
-
-        # print("Partitions...")
+        
         delta_partitions = 0 
-        for exec_labels in list_exec_labels:
+        for exec_labels in parts:
             self.exec_labels = exec_labels  
+            self.simulation(images)     # warm up (1) (use partition)
+            self.simulation(images)     # warm up (2) (use partition)
             torch.cuda.synchronize()
             starter.record()
             self.simulation(images)     # partition
             ender.record()
             torch.cuda.synchronize()
-            delta_partitions += starter.elapsed_time(ender)/1000 - delta_overhead
+            delta_partitions += starter.elapsed_time(ender)/1000
+
+            self.exec_labels = []
+            torch.cuda.synchronize()
+            self.simulation(images)
+            self.simulation(images)
+            starter.record()
+            self.simulation(images)     # find cpu overhead caused by functools
+            ender.record()
+            torch.cuda.synchronize()
+            delta_overhead = starter.elapsed_time(ender)/1000
+            # print(f"delta_overhead: {delta_overhead}")
+            
+            delta_partitions -= delta_overhead
 
         delta_partitions += t_transfer
-                    
-        return delta_baseline, delta_partitions, 1 - (delta_partitions/delta_baseline)
+
+        return delta_partitions
 
 from PIL import Image
 from torchvision import transforms
@@ -577,10 +586,7 @@ def translate(layernames):
 
 
 if __name__ == "__main__":
-    # f = open("critical_path.json", "r")
-    # f = open(input(), "r")
-    # critical_path = json.load(f)
-	
+    
     images = Image.open('input.jpg')
     images = np.array(images)
     transform = transforms.Compose([
@@ -593,16 +599,22 @@ if __name__ == "__main__":
     images = transform(images)
     images = torch.unsqueeze(images, dim=0).to(device)
     fasterrcnn = FasterRCNN().to(device)
+
+    delta_baseline_l = []
+    for i in range(7):
+        delta_baseline = fasterrcnn(images, critical_path=None, bandwidth=0)  # find baseline
+        delta_baseline_l.append(delta_baseline)
+    delta_baseline_l.pop(0)
+    delta_baseline = sum(delta_baseline_l)/len(delta_baseline_l)
    
     f_paths = []
-    directory = "critical_paths"
+    directory = input("Directory: ")
     for filename in os.listdir(directory):
         f = os.path.join(directory, filename)
         # checking if it is a file
         if os.path.isfile(f):
             f_paths.append(f)
     f_paths = sorted(f_paths, key=lambda e: int((e.split('/')[1]).split('.')[0]))
-
     for f_path in f_paths:
 
         f = open(f_path, 'r')
@@ -613,20 +625,16 @@ if __name__ == "__main__":
         bandwidth = critical_path[0]["content"]
         critical_path.pop(0)
 
-        parts = []
-        t_transfer = 0
-        for node in critical_path:
-            if node["type"] == "exec":
-                content = translate(node["content"])
-            parts.append(content)
-        elif node["type"] == "data":
-            t = node["content"] / bandwidth * 8
-            t_transfer += t
-        else: 
-            assert False, f"Node TYPE-{node['type']} not recognized..."
+        delta_partitions_l = []
+        for i in range(6):
+            delta_partitions_l.append(fasterrcnn(images, critical_path, bandwidth))
+        delta_partitions = sum(delta_partitions_l)/len(delta_partitions_l)
+
+        print(f"{bandwidth},{delta_baseline},{delta_partitions},{1-delta_partitions/delta_baseline}")
+        
             
-        delta_baseline, delta_partitions, speed_up_rate = fasterrcnn(images, parts, t_transfer)
-        print(f"{bandwidth},{delta_baseline},{delta_partitions},{speed_up_rate}")
+        # delta_baseline, delta_partitions, speed_up_rate = fasterrcnn(images, parts, t_transfer)
+        # print(f"{bandwidth},{delta_baseline},{delta_partitions},{speed_up_rate}")
     
     # f = open('tmp.csv', 'w')
     # f.write(f"delta_baseline,delta_partitions,speed_up_rates\n")

@@ -1,7 +1,7 @@
 [
     {
         "type": "bandwidth",
-        "content": 325.0
+        "content": 3500.0
     },
     {
         "type": "exec",
@@ -13,22 +13,18 @@
             "relu",
             "maxpool",
             "layer1",
+            "inner_0",
             "layer2",
+            "inner_1",
             "layer3",
             "inner_2",
             "layer4",
             "inner_3",
             "interpolate__2",
             "add__2",
-            "layer_2",
-            "rpn_parallel_f2",
             "interpolate__1",
-            "inner_1",
             "add__1",
-            "layer_1",
-            "rpn_parallel_f1",
             "interpolate__0",
-            "inner_0",
             "add__0",
             "layer_0",
             "rpn_parallel_f0",

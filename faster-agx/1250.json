@@ -1,7 +1,7 @@
 [
     {
         "type": "bandwidth",
-        "content": 475.0
+        "content": 1250.0
     },
     {
         "type": "exec",
@@ -23,42 +23,20 @@
             "interpolate__2",
             "add__2",
             "interpolate__1",
-            "add__1"
-        ]
-    },
-    {
-        "type": "data",
-        "content": 10.24
-    },
-    {
-        "type": "exec",
-        "content": [
-            "layer_1"
-        ]
-    },
-    {
-        "type": "data",
-        "content": 10.24
-    },
-    {
-        "type": "exec",
-        "content": [
+            "add__1",
+            "interpolate__0",
+            "add__0",
+            "layer_0",
+            "rpn_parallel_f0",
+            "layer_1",
+            "rpn_parallel_f1",
+            "rpn_merger",
             "box_roi_pool",
             "fc6",
             "fc7",
             "cls_score",
             "bbox_pred",
             "postprocess_detections"
-        ]
-    },
-    {
-        "type": "data",
-        "content": 0.0
-    },
-    {
-        "type": "exec",
-        "content": [
-            "resize"
         ]
     }
 ]
