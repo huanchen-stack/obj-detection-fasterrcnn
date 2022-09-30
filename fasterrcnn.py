@@ -710,16 +710,19 @@ class FasterRCNN(torch.nn.Module):
         self._logger_print()
         print(self.original(images))
         print("\t\t\t", self.timer.get_agg())
+
+
+        
         self.timer.tic()
         self.original(images)
         self.timer.toc()
         print(self.timer.get_time())
         
-        start = time.time()
-        self.original(images)
-        end = time.time()
-        print(f"delta: {end - start}")
-        print(F"{start},{end}")
+        # start = time.time()
+        # self.original(images)
+        # end = time.time()
+        # print(f"delta: {end - start}")
+        # print(F"{start},{end}")
         return
 
         if self.partitioned:

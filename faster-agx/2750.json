@@ -23,22 +23,28 @@
             "interpolate__2",
             "add__2",
             "interpolate__1",
-            "add__1"
+            "add__1",
+            "interpolate__0",
+            "add__0",
+            "layer_0",
+            "rpn_parallel_f0",
+            "layer_3"
         ]
     },
     {
         "type": "data",
-        "content": 10.24
+        "content": 0.64
     },
     {
         "type": "exec",
         "content": [
-            "layer_1"
+            "rpn_parallel_f3",
+            "rpn_merger"
         ]
     },
     {
         "type": "data",
-        "content": 10.24
+        "content": 0.02
     },
     {
         "type": "exec",

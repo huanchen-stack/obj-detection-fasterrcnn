@@ -11,18 +11,16 @@ class Clock(object):
         self.diff = None
         self.starter = torch.cuda.Event(enable_timing=True)
         self.ender = torch.cuda.Event(enable_timing=True)
+    
     def tic(self):
-        # self.start = time.time() 
+        torch.cuda.synchronize()
         self.starter.record()
     
     def toc(self):
-        # self.diff = time.time() - self.start
-        # self.agg += self.diff
         self.ender.record()
+        torch.cuda.synchronize()
     
     def get_time(self):
-        # return round(self.diff, 6)
-        torch.cuda.synchronize()
         delta = self.starter.elapsed_time(self.ender)/1000
         self.agg += delta
         return round(delta, 6)

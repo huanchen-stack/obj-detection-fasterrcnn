@@ -28,27 +28,8 @@
             "add__0",
             "layer_0",
             "rpn_parallel_f0",
-            "layer_3"
-        ]
-    },
-    {
-        "type": "data",
-        "content": 0.64
-    },
-    {
-        "type": "exec",
-        "content": [
             "rpn_parallel_f3",
-            "rpn_merger"
-        ]
-    },
-    {
-        "type": "data",
-        "content": 0.02
-    },
-    {
-        "type": "exec",
-        "content": [
+            "rpn_merger",
             "box_roi_pool",
             "fc6",
             "fc7",
