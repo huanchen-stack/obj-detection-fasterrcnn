@@ -608,7 +608,8 @@ if __name__ == "__main__":
     delta_baseline = sum(delta_baseline_l)/len(delta_baseline_l)
    
     f_paths = []
-    directory = input("Directory: ")
+    # directory = input("Directory: ")
+    directory = "faster-agx"
     for filename in os.listdir(directory):
         f = os.path.join(directory, filename)
         # checking if it is a file

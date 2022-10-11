@@ -18,7 +18,7 @@ def permute_and_flatten(layer, N, A, C, H, W):
     return layer
 
 def _tensor_size(tensor):
-    return f"{round(tensor.element_size() * tensor.nelement() / 1000000, 4)} Mb"
+    return f"{round(tensor.element_size() * tensor.nelement() / 1000000, 4)}"
 
 def _size_helper(obj):
     if type(obj) == torch.Tensor:
@@ -30,7 +30,7 @@ def _size_helper(obj):
             if type(tensor) != torch.Tensor:
                 assert False, f"Expected a tensor or a list of tensors as input, a list of {type(tensor)} was given."
             add += tensor.element_size() * tensor.nelement() / 1000000
-        return "List of Tensors", f"{round(add, 4)} Mb" 
+        return "List of Tensors", f"{round(add, 4)}" 
     elif type(obj) == type((1, 2)):
         add = 0
         for list in obj:
@@ -38,7 +38,7 @@ def _size_helper(obj):
                 if type(tensor) != torch.Tensor:
                     assert False, f"Expected a tensor or a list of tensors as input, a list of {type(tensor)} was given."
                 add += tensor.element_size() * tensor.nelement() / 1000000
-        return "Tuple of List of Tensors", f"{round(add, 4)} Mb" 
+        return "Tuple of List of Tensors", f"{round(add, 4)}" 
     elif type(obj) == ImageList:
         return _size_helper(obj.tensors)
     else:

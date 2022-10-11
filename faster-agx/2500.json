@@ -13,18 +13,16 @@
             "relu",
             "maxpool",
             "layer1",
+            "inner_0",
             "layer2",
+            "inner_1",
             "layer3",
+            "inner_2",
             "layer4",
             "inner_3",
-            "layer_3",
-            "extra",
-            "rpn_parallel_f4",
             "interpolate__2",
-            "inner_2",
             "add__2",
             "interpolate__1",
-            "inner_1",
             "add__1"
         ]
     },
@@ -35,21 +33,27 @@
     {
         "type": "exec",
         "content": [
-            "layer_1"
+            "layer_1",
+            "rpn_parallel_f1",
+            "layer_2",
+            "rpn_parallel_f2",
+            "layer_3"
         ]
     },
     {
         "type": "data",
-        "content": 10.24
+        "content": 0.64
     },
     {
         "type": "exec",
         "content": [
+            "rpn_parallel_f3",
+            "rpn_merger",
             "box_roi_pool",
             "fc6",
             "fc7",
-            "bbox_pred",
             "cls_score",
+            "bbox_pred",
             "postprocess_detections"
         ]
     }

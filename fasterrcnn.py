@@ -112,7 +112,7 @@ class FasterRCNN(torch.nn.Module):
         # output format:
         #   layername,time,mem_cpu,mem_cuda,size,macs
         #   undefined: -1
-        data_payload = "IGNORED" if ignore_payload else _size_helper(output)[1]
+        data_payload = 0 if ignore_payload else _size_helper(output)[1]
         if not self.mem:
             self.logger["profiles"].append(f"{name},{self.timer.get_time()},-1,-1,{data_payload},-1")
         elif self.mem and torch.cuda.is_available():
@@ -137,6 +137,18 @@ class FasterRCNN(torch.nn.Module):
         print("================================================")
         for line in self.logger["dependencies"]:
             print(line)
+
+    def _logger_write(self):
+        f = open("tmp.csv", 'a')
+        for line in self.logger["profiles"]:
+            f.write(f"{line}\n")
+        f.write(f"input,0,0,0,0.6021,0\n")
+        # f.write(f"resize,0,0,0,0,0\n")
+        f.write(f"output,0,0,0,0,0\n")
+        f.write(f"add__2,0,0,0,2.56,0\n")
+        f.write(f"add__1,0,0,0,10.24,0\n")
+        f.write(f"add__0,0,0,0,40.96,0\n")
+        f.close()
 
     def transform(self, images):
         # load module
@@ -511,7 +523,7 @@ class FasterRCNN(torch.nn.Module):
         proposals, proposal_losses = _rpn_merger()
         #   logger outputs
         for i in range(len(features_)):
-            self._dependency_writer(f"rpn_parallel_{i}", "rpn_merger")
+            self._dependency_writer(f"rpn_parallel_f{i}", "rpn_merger")
 
         return proposals, proposal_losses
 
@@ -529,7 +541,7 @@ class FasterRCNN(torch.nn.Module):
         #   setup func
         def _roi_box_pool():
             return box_roi_pool(features, proposals, [(800, 800)])
-        self._profiler_wrapper(_roi_box_pool, "roi_box_pool")
+        self._profiler_wrapper(_roi_box_pool, "box_roi_pool")
         #   get layer outputs
         box_features = _roi_box_pool()
         #   logger outputs
@@ -707,7 +719,8 @@ class FasterRCNN(torch.nn.Module):
 
         # # DEBUG MODE: Uncomment this segment
         print(self.simulation(images))
-        self._logger_print()
+        # self._logger_print()
+        self._logger_write()
         print(self.original(images))
         print("\t\t\t", self.timer.get_agg())
 
@@ -752,5 +765,29 @@ if __name__ == "__main__":
     images = transform(images)
     images = torch.unsqueeze(images, dim=0).to(device)
     fasterrcnn = FasterRCNN().to(device)
+
+    # erase tmp.csv
+    f = open("tmp.csv", "w")
+    f.close()
     
-    fasterrcnn(images)
+    for i in range(3):
+        fasterrcnn(images)
+
+    # clean up
+    d = {}
+    f = open("tmp.csv", "r")
+    reader = csv.reader(f, delimiter=',')
+    for layername, time, _, _, data, _ in reader:
+        if layername not in d:
+            d[layername] = {
+                "time": [],
+                "data": data,
+            }
+        d[layername]["time"].append(float(time))
+    f.close()
+    f = open("tmp.csv", "w")
+    f.write("layer_name,time,cpu_mem,cuda_mem,size,macs\n")
+    for key, val in d.items():
+        val["time"] = round(sum(val["time"])/len(val["time"]), 6)
+        f.write(f"{key},{val['time']},-1,-1,{val['data']},-1\n")
+    f.close()
